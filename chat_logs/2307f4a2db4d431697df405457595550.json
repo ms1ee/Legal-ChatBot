@@ -1,0 +1,20 @@
+{
+  "id": "2307f4a2db4d431697df405457595550",
+  "title": "영어로 법률 물어보기",
+  "created_at": "2025-11-11T08:25:28.384482+00:00",
+  "updated_at": "2025-11-11T08:32:01.864101+00:00",
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "I'm here to assist you!"
+    },
+    {
+      "role": "user",
+      "content": "Hello"
+    },
+    {
+      "role": "assistant",
+      "content": "안녕하세요! 저는 법률 전문가 Lexi입니다. 한국 법률 분야에서 관련 법적 조문과 절차를 정확히 안내해 드릴 수 있습니다. 궁금한 사항이 있으시면 언제든지 물어보세요!"
+    }
+  ]
+}
