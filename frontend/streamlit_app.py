@@ -5,7 +5,8 @@ import streamlit as st
 
 from css import CUSTOM_CSS
 
-BACKEND_URL = os.getenv("LEXI_BACKEND_URL", "http://127.0.0.1:9000")
+BACKEND_URL = os.getenv("LEXAI_BACKEND_URL", "http://127.0.0.1:9000")
+COLUMN_HEIGHT = 800
 
 def init_state():
     if "messages" not in st.session_state:
@@ -90,7 +91,11 @@ def render_session_panel():
         <div class="session-card">
             <div class="session-card-title">모델 정보</div>
             <div><strong>모델</strong>: {meta.get("model", "알 수 없음")}</div>
-            <div class="session-meta">temperature {cfg.get("temperature", "-")}, top_p {cfg.get("top_p", "-")}, max_tokens {cfg.get("max_new_tokens", "-")}</div>
+            <div class="session-meta">
+                temperature {cfg.get("temperature", "-")}<br/>
+                top_p {cfg.get("top_p", "-")}<br/>
+                max_tokens {cfg.get("max_new_tokens", "-")}
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -194,7 +199,7 @@ def main():
     left_col, right_col = st.columns([0.2, 0.8], gap="small")
 
     with left_col:
-        with st.container(height=1000, border=False):
+        with st.container(height=COLUMN_HEIGHT, border=False):
             if st.button(
                 "새 채팅", key="left-new-chat", use_container_width=True, type="primary"
             ):
@@ -282,7 +287,7 @@ def main():
                 break
 
     with right_col:
-        with st.container(height=700, border=False):
+        with st.container(height=COLUMN_HEIGHT, border=False):
             header_cols = st.columns([0.9, 0.1])
             header_cols[0].markdown(
                 f"""
