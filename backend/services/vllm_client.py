@@ -113,6 +113,7 @@ class LocalVLLMEngine:
         )
 
 ## 서버 키자마자 vLLM Engine 초기화 & 모델 로드 바로 해
+## vLLM 엔진 초기화 한번만 할 수 있도록 체크하는 역할도 함
 def _ensure_local_engine():
     global _LOCAL_ENGINE
     if _LOCAL_ENGINE is None:

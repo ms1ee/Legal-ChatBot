@@ -40,15 +40,11 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check():
-    """Simple liveness probe endpoint used by Streamlit and monitoring."""
-
     return {"status": "ok"}
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
-    """Main conversation endpoint consumed by the Streamlit frontend."""
-
     history_dicts = [msg.dict() for msg in request.history]
     try:
         reply, usage = await generate_reply(request.history, request.message)
