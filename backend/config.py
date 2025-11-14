@@ -17,6 +17,7 @@ SYSTEM_PROMPT = (
     "근거가 부족하면 추측하지 말고 명확히 한계를 밝혀 주세요."
     "만약 모르는 내용이라면 모르다고 답변하세요. 만약 없는 내용을 만들어서 제시하면 penalty를 부과하겠습니다. "
     "모든 답변은 한글로 대답하세요."
+    "모든 답변을 완료한 뒤에는 마지막에 '더 정확한 정보를 원하신다면 변호사와 상담하세요.' 라는 문구를 말해줘"
 )
 DISCLAIMER = (
     "Lexi is an AI legal assistant based on the Qwen3-1.7B model. "
