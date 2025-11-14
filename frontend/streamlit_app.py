@@ -1,12 +1,28 @@
+import base64
 import os
+from pathlib import Path
 
 import requests
 import streamlit as st
+from PIL import Image
 
 from css import CUSTOM_CSS
 
 BACKEND_URL = os.getenv("LEXAI_BACKEND_URL", "http://127.0.0.1:9000")
 COLUMN_HEIGHT = 800
+FRONTEND_DIR = Path(__file__).resolve().parent
+LOGO_PATH = FRONTEND_DIR.parent / "LexAI_Logo.png"
+LOGO_DATA_URI = ""
+PAGE_ICON = "⚖️"
+
+if LOGO_PATH.exists():
+    logo_bytes = LOGO_PATH.read_bytes()
+    LOGO_DATA_URI = base64.b64encode(logo_bytes).decode("utf-8")
+    try:
+        with Image.open(LOGO_PATH) as raw_logo:
+            PAGE_ICON = raw_logo.copy()
+    except Exception:
+        PAGE_ICON = "⚖️"
 
 def init_state():
     if "messages" not in st.session_state:
@@ -80,6 +96,19 @@ def render_conversation(conversation_placeholder):
                 unsafe_allow_html=True,
             )
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_brand_header():
+    logo_img_html = ""
+    if LOGO_DATA_URI:
+        logo_img_html = (
+            f'<img src="data:image/png;base64,{LOGO_DATA_URI}" '
+            'alt="LexAI logo" class="main-header-logo"/>'
+        )
+    st.markdown(
+        f'<h1 class="main-header">{logo_img_html}<span>LexAI</span></h1>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_session_panel():
@@ -185,7 +214,7 @@ def main():
     st.set_page_config(
         page_title="LexAI",
         layout="wide",
-        page_icon="⚖️",
+        page_icon=PAGE_ICON,
     )
 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -194,7 +223,7 @@ def main():
     if not st.session_state.conversations_loaded:
         refresh_conversation_list()
 
-    st.markdown('<h1 class="main-header">LexAI</h1>', unsafe_allow_html=True)
+    render_brand_header()
     st.markdown('<div class="lexi-columns-marker"></div>', unsafe_allow_html=True)
     left_col, right_col = st.columns([0.2, 0.8], gap="small")
 

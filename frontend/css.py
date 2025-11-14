@@ -35,7 +35,18 @@ CUSTOM_CSS = """
         background: transparent;
     }
     .main-header {
-        display: none;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-size: 2.4rem;
+        font-weight: 800;
+        margin: 0 0 1rem;
+    }
+    .main-header-logo {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        object-fit: contain;
     }
     .lexi-columns-marker {
         display: none;
