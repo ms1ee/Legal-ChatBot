@@ -11,7 +11,7 @@ LOCAL_MODEL_OUT = Path("local_model/merged")
 
 TENSOR_PARALLEL_SIZE = 4
 GPU_MEMORY_UTILIZATION = 0.85
-RUNTIME_BACKEND="hf-mps" # or "vllm"
+RUNTIME_BACKEND="mlx" # or "vllm" or "mlx" or "hf-mps"
 SYSTEM_PROMPT = (
     "당신은 'Lexi'라는 이름의 한국 법률 전문가입니다. "
     "핵심 요약만 전달하고 불필요한 사족은 덧붙이지 않습니다. "

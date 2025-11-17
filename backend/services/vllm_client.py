@@ -225,6 +225,73 @@ class LocalHFEngine:
         return await loop.run_in_executor(
             None, self._generate_sync, history, user_message
         )
+
+class LocalMLXEngine:
+    def __init__(self):
+        from mlx_lm import load as mlx_load, generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
+        self._mlx_generate = mlx_generate
+        model_id = _maybe_resolve_local_path(config.LOCAL_MODEL_OUT)
+        logger.info("Loading MLX model from %s", model_id)
+        self.model, self.tokenizer = mlx_load(model_id)
+        if getattr(self.tokenizer, "pad_token", None) is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        self.sampler = make_sampler(
+            temp=config.TEMPERATURE,
+            top_p=config.TOP_P,
+        )
+        self.max_new_tokens = config.MAX_NEW_TOKENS
+
+    def _prepare_prompt(self, history, user_message):
+        messages = [{"role": "system", "content": config.SYSTEM_PROMPT}]
+        messages.extend([msg.dict() for msg in history])
+        messages.append({"role": "user", "content": user_message})
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def _count_tokens(self, text: str) -> int:
+        ids = self.tokenizer.encode(text)
+        return len(ids)
+
+    def _generate_sync(self, history, user_message):
+        prompt = self._prepare_prompt(history, user_message)
+
+        result = self._mlx_generate(
+            self.model,
+            self.tokenizer,
+            prompt,
+            max_tokens=int(self.max_new_tokens),
+            sampler=self.sampler,
+        )
+
+        if isinstance(result, dict):
+            text = result.get("text", "")
+        else:
+            text = str(result)
+
+        text = _strip_think_tag(text.strip())
+
+        prompt_tokens = self._count_tokens(prompt)
+        completion_tokens = self._count_tokens(text)
+
+        usage = UsageReport(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+        return text, usage
+
+    async def generate(self, history, user_message):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._generate_sync, history, user_message
+        )
+
+    
 ## 서버 키자마자 vLLM Engine 초기화 & 모델 로드 바로 해
 ## vLLM 엔진 초기화 한번만 할 수 있도록 체크하는 역할도 함
 def _ensure_local_engine():
@@ -235,6 +302,8 @@ def _ensure_local_engine():
             _LOCAL_ENGINE = LocalVLLMEngine()
         elif config.RUNTIME_BACKEND == "hf-mps":
             _LOCAL_ENGINE = LocalHFEngine()
+        elif config.RUNTIME_BACKEND == "mlx":
+            _LOCAL_ENGINE = LocalMLXEngine()
         else:
             raise RuntimeError(f"Unsupported RUNTIME_BACKEND: {config.RUNTIME_BACKEND}")
     return _LOCAL_ENGINE

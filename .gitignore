@@ -2,3 +2,5 @@ chat_logs/*
 __pycache__/
 *.pyc
 local_model/Qwen3-1.7B/
+local_model/merged/
+.vscode/
