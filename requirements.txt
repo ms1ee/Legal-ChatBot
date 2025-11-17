@@ -6,3 +6,5 @@ requests>=2.31
 python-dotenv>=1.0
 transformers>=4.38
 vllm>=0.4.0
+peft==0.18.0
+accelerate==1.11.0

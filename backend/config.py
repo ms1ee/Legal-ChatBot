@@ -5,11 +5,11 @@ MAX_NEW_TOKENS = 8192
 TEMPERATURE = 0
 TOP_P = 0.1
 
-LOCAL_BASE_MODEL = "Qwen/Qwen3-1.7B"
+LOCAL_BASE_MODEL = Path("local_model/Qwen3-1.7B")
 LOCAL_WEIGHTS_PATH = Path("local_model/")
 TENSOR_PARALLEL_SIZE = 4
 GPU_MEMORY_UTILIZATION = 0.85
-
+RUNTIME_BACKEND="hf-mps" # or "vllm"
 SYSTEM_PROMPT = (
     "당신은 'Lexi'라는 이름의 한국 법률 전문가입니다. "
     "핵심 요약만 전달하고 불필요한 사족은 덧붙이지 않습니다. "
