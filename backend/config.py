@@ -6,7 +6,9 @@ TEMPERATURE = 0
 TOP_P = 0.1
 
 LOCAL_BASE_MODEL = Path("local_model/Qwen3-1.7B")
-LOCAL_WEIGHTS_PATH = Path("local_model/")
+LOCAL_WEIGHTS_PATH = Path("local_model/LoRA")
+LOCAL_MODEL_OUT = Path("local_model/merged")
+
 TENSOR_PARALLEL_SIZE = 4
 GPU_MEMORY_UTILIZATION = 0.85
 RUNTIME_BACKEND="hf-mps" # or "vllm"
