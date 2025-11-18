@@ -7,10 +7,11 @@ import requests
 import streamlit as st
 from PIL import Image
 
-from css import CUSTOM_CSS
+from css import THEME_CHOICES, get_theme_css
 
 BACKEND_URL = os.getenv("LEXAI_BACKEND_URL", "http://127.0.0.1:9000")
-COLUMN_HEIGHT = 800
+COLUMN_HEIGHT = 780
+CHAT_LOG_HEIGHT = 520
 FRONTEND_DIR = Path(__file__).resolve().parent
 LOGO_PATH = FRONTEND_DIR.parent / "LexAI_Logo.png"
 LOGO_DATA_URI = ""
@@ -24,6 +25,34 @@ if LOGO_PATH.exists():
             PAGE_ICON = raw_logo.copy()
     except Exception:
         PAGE_ICON = "⚖️"
+
+
+def _preview_text(*candidates):
+    for text in candidates:
+        if not text:
+            continue
+        snippet = text.strip().split()[0][:60]
+        if snippet:
+            return snippet
+    return "New chat"
+
+
+def _derive_title_from_record(record):
+    if not record:
+        return "New chat"
+    title = record.get("title")
+    messages = record.get("messages") or []
+    if title and title != "New chat":
+        return _preview_text(title)
+    assistant_texts = [
+        msg.get("content")
+        for msg in messages
+        if msg.get("role") == "assistant"
+    ]
+    preview = _preview_text(*assistant_texts)
+    if preview != "New chat":
+        return preview
+    return _preview_text(title)
 
 def init_state():
     if "messages" not in st.session_state:
@@ -46,6 +75,12 @@ def init_state():
         st.session_state.rename_target = None
     if "conversation_search" not in st.session_state:
         st.session_state.conversation_search = ""
+    if "ui_theme" not in st.session_state:
+        st.session_state.ui_theme = "light"
+    if "current_title" not in st.session_state:
+        st.session_state.current_title = "New chat"
+    if "title_cache" not in st.session_state:
+        st.session_state.title_cache = {}
 
 def reset_conversation():
     st.session_state.messages = []
@@ -56,6 +91,52 @@ def reset_conversation():
     }
     st.session_state.disclaimer = ""
     st.session_state.conversation_id = None
+    st.session_state.current_title = "New chat"
+
+
+def _theme_label_from_key(theme_key):
+    for label, key in THEME_CHOICES.items():
+        if key == theme_key:
+            return label
+    return next(iter(THEME_CHOICES.keys()))
+
+
+def render_sidebar_header():
+    logo_html = ""
+    if LOGO_DATA_URI:
+        logo_html = (
+            f'<img src="data:image/png;base64,{LOGO_DATA_URI}" '
+            'alt="LexAI logo" class="sidebar-logo"/>'
+        )
+    st.markdown(
+        f"""
+        <div class="sidebar-header">
+            {logo_html}
+            <div>
+                <div class="sidebar-headline">LexAI</div>
+                <div class="sidebar-subtitle">한국 법률 전문가</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_theme_controls():
+    st.caption("색상 모드")
+    labels = list(THEME_CHOICES.keys())
+    current_label = _theme_label_from_key(st.session_state.ui_theme)
+    default_index = labels.index(current_label)
+    selection = st.radio(
+        "색상 테마",
+        options=labels,
+        index=default_index,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="__theme_selector",
+    )
+    st.session_state.ui_theme = THEME_CHOICES.get(selection, "light")
+    return st.session_state.ui_theme
 
 
 def render_message(message):
@@ -79,6 +160,7 @@ def render_message(message):
 def render_conversation(conversation_placeholder):
     conversation_placeholder.empty()
     with conversation_placeholder.container():
+        st.markdown('<div class="conversation-shell">', unsafe_allow_html=True)
         st.markdown(
             '<div class="conversation-body scrollable">', unsafe_allow_html=True
         )
@@ -97,19 +179,8 @@ def render_conversation(conversation_placeholder):
                 unsafe_allow_html=True,
             )
         st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_brand_header():
-    logo_img_html = ""
-    if LOGO_DATA_URI:
-        logo_img_html = (
-            f'<img src="data:image/png;base64,{LOGO_DATA_URI}" '
-            'alt="LexAI logo" class="main-header-logo"/>'
-        )
-    st.markdown(
-        f'<h1 class="main-header">{logo_img_html}<span>LexAI</span></h1>',
-        unsafe_allow_html=True,
-    )
+        st.markdown("</div>", unsafe_allow_html=True)
+    return chat_started
 
 
 def render_session_panel():
@@ -119,12 +190,21 @@ def render_session_panel():
     st.markdown(
         f"""
         <div class="session-card">
-            <div class="session-card-title">모델 정보</div>
-            <div><strong>모델</strong>: {meta.get("model", "알 수 없음")}</div>
-            <div class="session-meta">
-                temperature {cfg.get("temperature", "-")}<br/>
-                top_p {cfg.get("top_p", "-")}<br/>
-                max_tokens {cfg.get("max_new_tokens", "-")}
+            <small>MODEL</small>
+            <div class="session-headline">{meta.get("model", "알 수 없음")}</div>
+            <div class="session-metrics">
+                <div>
+                    <strong>{cfg.get("temperature", "-")}</strong>
+                    <span>temperature</span>
+                </div>
+                <div>
+                    <strong>{cfg.get("top_p", "-")}</strong>
+                    <span>top&nbsp;p</span>
+                </div>
+                <div>
+                    <strong>{cfg.get("max_new_tokens", "-")}</strong>
+                    <span>max&nbsp;tokens</span>
+                </div>
             </div>
         </div>
         """,
@@ -133,14 +213,39 @@ def render_session_panel():
     st.markdown(
         f"""
         <div class="session-card">
-            <div class="session-card-title">토큰 사용량</div>
-            <div>프롬프트: {usage.get("prompt_tokens", "–")} tokens</div>
-            <div>응답: {usage.get("completion_tokens", "–")} tokens</div>
-            <div>총합: {usage.get("total_tokens", "–")} tokens</div>
+            <small>USAGE</small>
+            <div class="session-usage">
+                <div>프롬프트 <strong>{usage.get("prompt_tokens", "–")}</strong></div>
+                <div>응답 <strong>{usage.get("completion_tokens", "–")}</strong></div>
+                <div>총합 <strong>{usage.get("total_tokens", "–")}</strong></div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_hero_input():
+    with st.container(border=False):
+        hero_prompt = st.text_area(
+            "LexAI에게 물어보기",
+            key="hero_prompt_input",
+            placeholder="법률 관련 질문을 입력하세요.",
+            label_visibility="collapsed",
+            height=90,
+        )
+        send = st.button(
+            "질문 전송",
+            key="hero_submit",
+            type="primary",
+            use_container_width=True,
+        )
+    if send:
+        text = (hero_prompt or "").strip()
+        st.session_state.hero_prompt_input = ""
+        if text:
+            return text
+    return None
 
 
 def stream_backend(prompt, history, conversation_id):
@@ -181,6 +286,27 @@ def refresh_conversation_list():
         return
     st.session_state.conversation_list = response.json()
     st.session_state.conversations_loaded = True
+    for conv in st.session_state.conversation_list:
+        conv_id = conv.get("id")
+        if not conv_id:
+            continue
+        title = conv.get("title")
+        if title and title != "New chat":
+            st.session_state.title_cache[conv_id] = title
+            continue
+        if conv_id in st.session_state.title_cache:
+            continue
+        try:
+            preview_response = requests.get(
+                f"{BACKEND_URL}/conversations/{conv_id}", timeout=10
+            )
+            preview_response.raise_for_status()
+        except requests.RequestException:
+            continue
+        preview_record = preview_response.json()
+        st.session_state.title_cache[conv_id] = _derive_title_from_record(
+            preview_record
+        )
 
 
 def load_conversation(conversation_id):
@@ -196,6 +322,10 @@ def load_conversation(conversation_id):
     st.session_state.messages = record.get("messages") or []
     st.session_state.conversation_id = record.get("id")
     st.session_state.disclaimer = st.session_state.disclaimer or ""
+    preview_title = _derive_title_from_record(record)
+    st.session_state.current_title = preview_title
+    if record.get("id"):
+        st.session_state.title_cache[record["id"]] = preview_title
 
 
 def start_rename(conversation):
@@ -222,6 +352,9 @@ def rename_conversation(conversation_id, new_title):
         st.error(f"제목 변경 실패: {exc}")
         return
     st.session_state.rename_target = None
+    st.session_state.title_cache[conversation_id] = new_title
+    if st.session_state.conversation_id == conversation_id:
+        st.session_state.current_title = new_title or st.session_state.current_title
     refresh_conversation_list()
     st.rerun()
 
@@ -233,48 +366,56 @@ def main():
         page_icon=PAGE_ICON,
     )
 
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    theme_style_slot = st.empty()
     init_state()
 
     if not st.session_state.conversations_loaded:
         refresh_conversation_list()
 
-    render_brand_header()
     st.markdown('<div class="lexi-columns-marker"></div>', unsafe_allow_html=True)
-    left_col, right_col = st.columns([0.2, 0.8], gap="small")
+    left_col, right_col = st.columns([0.26, 0.74], gap="medium")
 
     with left_col:
-        with st.container(height=COLUMN_HEIGHT, border=False):
-            if st.button(
-                "새 채팅", key="left-new-chat", use_container_width=True, type="primary"
-            ):
-                reset_conversation()
-                st.rerun()
-            st.markdown(
-                '<div class="sidebar-title">세션 정보</div>', unsafe_allow_html=True
-            )
-            render_session_panel()
-            st.markdown(
-                '<div class="sidebar-title">채팅 로그</div>', unsafe_allow_html=True
-            )
-            st.markdown('<div class="sidebar-search">', unsafe_allow_html=True)
-            st.text_input(
-                "검색",
-                key="conversation_search",
-                placeholder="대화목록 검색하기",
-                label_visibility="collapsed",
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
+        render_sidebar_header()
+        # current_theme = render_theme_controls()
+        current_theme = st.session_state.ui_theme
+        theme_style_slot.markdown(
+            get_theme_css(current_theme), unsafe_allow_html=True
+        )
+        if st.button(
+            "새 채팅", key="left-new-chat", use_container_width=True, type="secondary"
+        ):
+            reset_conversation()
+            st.rerun()
+        st.markdown('<div class="sidebar-title">세션 정보</div>', unsafe_allow_html=True)
+        render_session_panel()
+        st.markdown('<div class="sidebar-title">채팅 로그</div>', unsafe_allow_html=True)
+        st.text_input(
+            "검색",
+            key="conversation_search",
+            placeholder="대화목록 검색하기",
+            label_visibility="collapsed",
+        )
+        log_container = st.container(height=CHAT_LOG_HEIGHT, border=False)
+        with log_container:
             st.markdown('<div class="chat-log-list scrollable">', unsafe_allow_html=True)
             conversations = st.session_state.conversation_list
             search_term = (
                 st.session_state.get("conversation_search") or ""
             ).strip().lower()
+
+            def _conv_title(conv_record):
+                return (
+                    st.session_state.title_cache.get(conv_record.get("id"))
+                    or conv_record.get("title")
+                    or "New chat"
+                )
+
             if search_term:
                 conversations = [
                     conv
                     for conv in conversations
-                    if search_term in (conv.get("title") or "New chat").lower()
+                    if search_term in _conv_title(conv).lower()
                 ]
             if not conversations:
                 empty_message = (
@@ -285,14 +426,14 @@ def main():
                 st.caption(empty_message)
             else:
                 for conv in conversations:
-                    title = conv.get("title") or "New chat"
+                    title = _conv_title(conv)
                     is_active = conv.get("id") == st.session_state.conversation_id
                     row = st.container()
                     row.markdown(
                         f'<div class="chat-log-entry{" active" if is_active else ""}">',
                         unsafe_allow_html=True,
                     )
-                    cols = row.columns([0.85, 0.15], gap="small")
+                    cols = row.columns([0.82, 0.18], gap="small")
                     if cols[0].button(
                         title, key=f"conv-{conv['id']}", use_container_width=True
                     ):
@@ -323,31 +464,14 @@ def main():
                             cancel_rename()
                     row.markdown("</div>", unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
-
-    current_title = "New chat"
-    if st.session_state.conversation_id:
-        for conv in st.session_state.conversation_list:
-            if conv["id"] == st.session_state.conversation_id:
-                current_title = conv.get("title") or current_title
-                break
+    current_title = st.session_state.get("current_title", "New chat")
 
     with right_col:
         with st.container(height=COLUMN_HEIGHT, border=False):
-            header_cols = st.columns([0.9, 0.1])
-            header_cols[0].markdown(
-                f"""
-                <div>
-                    <div class="workspace-eyebrow">LexAI</div>
-                    <div class="workspace-title">{current_title}</div>
-                </div>
-                """,
+            st.markdown(
+                f'<div class="workspace-title">{current_title}</div>',
                 unsafe_allow_html=True,
             )
-            if header_cols[1].button(
-                "새 채팅", key="right-new-chat", use_container_width=True
-            ):
-                reset_conversation()
-                st.rerun()
             conversation_placeholder = st.empty()
             render_conversation(conversation_placeholder)
             if prompt := st.chat_input("LexAI에게 물어보기"):
@@ -407,6 +531,14 @@ def main():
                                     "conversation_id",
                                     st.session_state.get("conversation_id"),
                                 )
+                                preview_title = _preview_text(
+                                    event.get("reply"), assistant_message["content"]
+                                )
+                                st.session_state.current_title = preview_title
+                                if st.session_state.conversation_id:
+                                    st.session_state.title_cache[
+                                        st.session_state.conversation_id
+                                    ] = preview_title
                                 final_received = True
                                 render_conversation(conversation_placeholder)
                                 break
