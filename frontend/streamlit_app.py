@@ -159,6 +159,7 @@ def render_message(message):
 
 def render_conversation(conversation_placeholder):
     conversation_placeholder.empty()
+    hero_prompt = None
     with conversation_placeholder.container():
         st.markdown('<div class="conversation-shell">', unsafe_allow_html=True)
         st.markdown(
@@ -178,9 +179,10 @@ def render_conversation(conversation_placeholder):
                 """,
                 unsafe_allow_html=True,
             )
+            hero_prompt = render_hero_input()
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
-    return chat_started
+    return chat_started, hero_prompt
 
 
 def render_session_panel():
@@ -226,24 +228,28 @@ def render_session_panel():
 
 
 def render_hero_input():
-    with st.container(border=False):
-        hero_prompt = st.text_area(
-            "LexAI에게 물어보기",
-            key="hero_prompt_input",
-            placeholder="법률 관련 질문을 입력하세요.",
-            label_visibility="collapsed",
-            height=90,
-        )
-        send = st.button(
-            "질문 전송",
-            key="hero_submit",
-            type="primary",
-            use_container_width=True,
-        )
+    st.session_state.setdefault("hero_prompt_input", "")
+    if st.session_state.pop("hero_prompt_reset_pending", False):
+        st.session_state.hero_prompt_input = ""
+
+    st.markdown('<div class="hero-input-wrapper">', unsafe_allow_html=True)
+    hero_prompt = st.text_area(
+        "LexAI에게 물어보기",
+        key="hero_prompt_input",
+        placeholder="법률 관련 질문을 입력하세요.",
+        label_visibility="collapsed",
+        height=120,
+    )
+    send = st.button(
+        "질문 보내기",
+        key="hero_submit",
+        use_container_width=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
     if send:
         text = (hero_prompt or "").strip()
-        st.session_state.hero_prompt_input = ""
         if text:
+            st.session_state.hero_prompt_reset_pending = True
             return text
     return None
 
@@ -276,6 +282,91 @@ def stream_backend(prompt, history, conversation_id):
             except json.JSONDecodeError:
                 continue
             yield event
+
+
+def handle_user_prompt(prompt, conversation_placeholder):
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return
+
+    history_payload = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in st.session_state.messages
+    ]
+    current_conversation_id = st.session_state.conversation_id
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    assistant_message = {
+        "role": "assistant",
+        "content": "Lexi가 응답 중입니다…",
+    }
+    st.session_state.messages.append(assistant_message)
+    render_conversation(conversation_placeholder)
+
+    final_received = False
+    stream_failed = False
+    stream_notice_active = True
+    try:
+        for event in stream_backend(
+            prompt, history_payload, current_conversation_id
+        ):
+            event_type = event.get("type")
+            if event_type == "start":
+                st.session_state.session_meta = {
+                    "model": event.get("model", "미상"),
+                    "generation_config": event.get("generation_config", {}),
+                    "usage": {},
+                }
+            elif event_type == "delta":
+                text = event.get("text")
+                if text is not None:
+                    assistant_message["content"] = text or assistant_message["content"]
+                    if stream_notice_active:
+                        stream_notice_active = False
+                    render_conversation(conversation_placeholder)
+            elif event_type == "final":
+                assistant_message["content"] = event.get(
+                    "reply", assistant_message["content"]
+                )
+                st.session_state.disclaimer = event.get(
+                    "disclaimer", st.session_state.disclaimer
+                )
+                st.session_state.session_meta["model"] = event.get(
+                    "model",
+                    st.session_state.session_meta.get("model", "미상"),
+                )
+                st.session_state.session_meta["generation_config"] = event.get(
+                    "generation_config",
+                    st.session_state.session_meta.get("generation_config", {}),
+                )
+                st.session_state.session_meta["usage"] = event.get("usage", {}) or {}
+                st.session_state.conversation_id = event.get(
+                    "conversation_id",
+                    st.session_state.get("conversation_id"),
+                )
+                preview_title = _preview_text(
+                    event.get("reply"), assistant_message["content"]
+                )
+                st.session_state.current_title = preview_title
+                if st.session_state.conversation_id:
+                    st.session_state.title_cache[
+                        st.session_state.conversation_id
+                    ] = preview_title
+                final_received = True
+                render_conversation(conversation_placeholder)
+                break
+            elif event_type == "error":
+                st.error(event.get("message", "스트리밍 중 오류가 발생했습니다."))
+                stream_failed = True
+                break
+    except requests.RequestException as exc:
+        stream_failed = True
+        st.error(f"Backend error: {exc}")
+    finally:
+        if stream_failed or not final_received:
+            st.session_state.messages.pop()
+        else:
+            refresh_conversation_list()
 
 
 def refresh_conversation_list():
@@ -473,95 +564,13 @@ def main():
                 unsafe_allow_html=True,
             )
             conversation_placeholder = st.empty()
-            render_conversation(conversation_placeholder)
-            if prompt := st.chat_input("LexAI에게 물어보기"):
-                history_payload = [
-                    {"role": msg["role"], "content": msg["content"]}
-                    for msg in st.session_state.messages
-                ]
-                current_conversation_id = st.session_state.conversation_id
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                assistant_message = {"role": "assistant", "content": ""}
-                st.session_state.messages.append(assistant_message)
-                render_conversation(conversation_placeholder)
-                final_received = False
-                stream_failed = False
-                try:
-                    with st.spinner("LexAI가 응답 중입니다…"):
-                        for event in stream_backend(
-                            prompt, history_payload, current_conversation_id
-                        ):
-                            event_type = event.get("type")
-                            if event_type == "start":
-                                st.session_state.session_meta = {
-                                    "model": event.get("model", "미상"),
-                                    "generation_config": event.get(
-                                        "generation_config", {}
-                                    ),
-                                    "usage": {},
-                                }
-                            elif event_type == "delta":
-                                text = event.get("text")
-                                if text is not None:
-                                    assistant_message["content"] = text
-                                    render_conversation(conversation_placeholder)
-                            elif event_type == "final":
-                                assistant_message["content"] = event.get(
-                                    "reply", assistant_message["content"]
-                                )
-                                st.session_state.disclaimer = event.get(
-                                    "disclaimer", st.session_state.disclaimer
-                                )
-                                st.session_state.session_meta["model"] = event.get(
-                                    "model",
-                                    st.session_state.session_meta.get("model", "미상"),
-                                )
-                                st.session_state.session_meta[
-                                    "generation_config"
-                                ] = event.get(
-                                    "generation_config",
-                                    st.session_state.session_meta.get(
-                                        "generation_config", {}
-                                    ),
-                                )
-                                st.session_state.session_meta["usage"] = event.get(
-                                    "usage", {}
-                                ) or {}
-                                st.session_state.conversation_id = event.get(
-                                    "conversation_id",
-                                    st.session_state.get("conversation_id"),
-                                )
-                                preview_title = _preview_text(
-                                    event.get("reply"), assistant_message["content"]
-                                )
-                                st.session_state.current_title = preview_title
-                                if st.session_state.conversation_id:
-                                    st.session_state.title_cache[
-                                        st.session_state.conversation_id
-                                    ] = preview_title
-                                final_received = True
-                                render_conversation(conversation_placeholder)
-                                break
-                            elif event_type == "error":
-                                st.error(
-                                    event.get(
-                                        "message", "스트리밍 중 오류가 발생했습니다."
-                                    )
-                                )
-                                stream_failed = True
-                                break
-                except requests.RequestException as exc:
-                    stream_failed = True
-                    st.error(f"Backend error: {exc}")
-                finally:
-                    if stream_failed or not final_received:
-                        st.session_state.messages.pop()
-                    else:
-                        refresh_conversation_list()
+            chat_started, hero_prompt = render_conversation(conversation_placeholder)
+            prompt = hero_prompt if not chat_started else st.chat_input(
+                "LexAI에게 물어보기"
+            )
+            if prompt:
+                handle_user_prompt(prompt, conversation_placeholder)
                 st.rerun()
-
-    if st.session_state.disclaimer:
-        st.info(st.session_state.disclaimer)
 
 
 if __name__ == "__main__":
