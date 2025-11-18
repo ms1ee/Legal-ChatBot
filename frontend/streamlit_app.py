@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 from pathlib import Path
 
@@ -142,19 +143,34 @@ def render_session_panel():
     )
 
 
-def call_backend(prompt):
-    history = [
-        {"role": msg["role"], "content": msg["content"]}
-        for msg in st.session_state.messages[:-1]
-    ]
+def stream_backend(prompt, history, conversation_id):
     payload = {
-        "conversation_id": st.session_state.conversation_id,
+        "conversation_id": conversation_id,
         "message": prompt,
         "history": history,
     }
-    response = requests.post(f"{BACKEND_URL}/chat", json=payload, timeout=90)
-    response.raise_for_status()
-    return response.json()
+    with requests.post(
+        f"{BACKEND_URL}/chat/stream",
+        json=payload,
+        stream=True,
+        timeout=None,
+    ) as response:
+        response.raise_for_status()
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+            if not raw_line.startswith("data:"):
+                continue
+            data = raw_line[5:].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                event = json.loads(data.lstrip())
+            except json.JSONDecodeError:
+                continue
+            yield event
 
 
 def refresh_conversation_list():
@@ -170,7 +186,7 @@ def refresh_conversation_list():
 def load_conversation(conversation_id):
     try:
         response = requests.get(
-            f"{BACKEND_URL}/conversations/{conversation_id}", timeout=10
+            f"{BACKEND_URL}/conversations/{conversation_id}", timeout=10 
         )
         response.raise_for_status()
     except requests.RequestException as exc:
@@ -335,31 +351,80 @@ def main():
             conversation_placeholder = st.empty()
             render_conversation(conversation_placeholder)
             if prompt := st.chat_input("LexAI에게 물어보기"):
+                history_payload = [
+                    {"role": msg["role"], "content": msg["content"]}
+                    for msg in st.session_state.messages
+                ]
+                current_conversation_id = st.session_state.conversation_id
                 st.session_state.messages.append({"role": "user", "content": prompt})
+                assistant_message = {"role": "assistant", "content": ""}
+                st.session_state.messages.append(assistant_message)
                 render_conversation(conversation_placeholder)
-                with st.spinner("Contacting LexAI…"):
-                    try:
-                        backend_response = call_backend(prompt)
-                    except requests.RequestException as exc:
-                        st.error(f"Backend error: {exc}")
+                final_received = False
+                stream_failed = False
+                try:
+                    with st.spinner("LexAI가 응답 중입니다…"):
+                        for event in stream_backend(
+                            prompt, history_payload, current_conversation_id
+                        ):
+                            event_type = event.get("type")
+                            if event_type == "start":
+                                st.session_state.session_meta = {
+                                    "model": event.get("model", "미상"),
+                                    "generation_config": event.get(
+                                        "generation_config", {}
+                                    ),
+                                    "usage": {},
+                                }
+                            elif event_type == "delta":
+                                text = event.get("text")
+                                if text is not None:
+                                    assistant_message["content"] = text
+                                    render_conversation(conversation_placeholder)
+                            elif event_type == "final":
+                                assistant_message["content"] = event.get(
+                                    "reply", assistant_message["content"]
+                                )
+                                st.session_state.disclaimer = event.get(
+                                    "disclaimer", st.session_state.disclaimer
+                                )
+                                st.session_state.session_meta["model"] = event.get(
+                                    "model",
+                                    st.session_state.session_meta.get("model", "미상"),
+                                )
+                                st.session_state.session_meta[
+                                    "generation_config"
+                                ] = event.get(
+                                    "generation_config",
+                                    st.session_state.session_meta.get(
+                                        "generation_config", {}
+                                    ),
+                                )
+                                st.session_state.session_meta["usage"] = event.get(
+                                    "usage", {}
+                                ) or {}
+                                st.session_state.conversation_id = event.get(
+                                    "conversation_id",
+                                    st.session_state.get("conversation_id"),
+                                )
+                                final_received = True
+                                render_conversation(conversation_placeholder)
+                                break
+                            elif event_type == "error":
+                                st.error(
+                                    event.get(
+                                        "message", "스트리밍 중 오류가 발생했습니다."
+                                    )
+                                )
+                                stream_failed = True
+                                break
+                except requests.RequestException as exc:
+                    stream_failed = True
+                    st.error(f"Backend error: {exc}")
+                finally:
+                    if stream_failed or not final_received:
+                        st.session_state.messages.pop()
                     else:
-                        st.session_state.disclaimer = backend_response.get(
-                            "disclaimer", ""
-                        )
-                        st.session_state.session_meta = {
-                            "model": backend_response.get("model", "미상"),
-                            "generation_config": backend_response.get(
-                                "generation_config", {}
-                            ),
-                            "usage": backend_response.get("usage", {}),
-                        }
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": backend_response["reply"]}
-                        )
-                        st.session_state.conversation_id = backend_response.get(
-                            "conversation_id",
-                            st.session_state.get("conversation_id"),
-                        )
                         refresh_conversation_list()
                 st.rerun()
 

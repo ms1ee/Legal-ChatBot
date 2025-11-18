@@ -1,11 +1,17 @@
 import asyncio
 import logging
 import re
+from collections.abc import Iterator
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
+from vllm.entrypoints.utils import _validate_truncation_size
 from vllm.lora.request import LoRARequest
+from vllm.sampling_params import RequestOutputKind
 
 from .. import config
 from ..schemas import UsageReport
@@ -13,11 +19,26 @@ from ..schemas import UsageReport
 logger = logging.getLogger(__name__)
 
 _LOCAL_ENGINE = None
-THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
 
 
 def _strip_think_tag(text):
-    cleaned = THINK_PATTERN.sub("", text)
+    lowered = text.lower()
+    result = []
+    idx = 0
+    while idx < len(text):
+        start = lowered.find(THINK_OPEN, idx)
+        if start == -1:
+            result.append(text[idx:])
+            break
+        result.append(text[idx:start])
+        end = lowered.find(THINK_CLOSE, start)
+        if end == -1:
+            # Drop everything after an opening tag with no closing tag yet.
+            break
+        idx = end + len(THINK_CLOSE)
+    cleaned = "".join(result)
     return cleaned.strip()
 
 
@@ -28,6 +49,14 @@ def _maybe_resolve_local_path(path_like):
     if candidate.exists():
         return str(candidate.resolve())
     return str(path_like)
+
+
+@dataclass
+class StreamChunk:
+    delta: str
+    text: str
+    finished: bool
+    usage: UsageReport | None = None
 
 
 class LocalVLLMEngine:
@@ -106,6 +135,63 @@ class LocalVLLMEngine:
         )
         return text, usage
 
+    def stream_generate(self, history, user_message) -> Iterator[StreamChunk]:
+        prompt = self._prepare_prompt(history, user_message)
+
+        sampling_params = deepcopy(self.sampling_params)
+        sampling_params.output_kind = RequestOutputKind.CUMULATIVE
+
+        request_id = str(next(self.llm.request_counter))
+        model_config = self.llm.llm_engine.model_config
+        tokenization_kwargs: dict[str, Any] = {}
+        _validate_truncation_size(
+            model_config.max_model_len,
+            sampling_params.truncate_prompt_tokens,
+            tokenization_kwargs,
+        )
+
+        self.llm.llm_engine.add_request(
+            request_id,
+            prompt,
+            sampling_params,
+            lora_request=self.lora_request,
+            tokenization_kwargs=tokenization_kwargs,
+        )
+
+        last_clean_text = ""
+        finished = False
+        while self.llm.llm_engine.has_unfinished_requests() and not finished:
+            step_outputs = self.llm.llm_engine.step()
+            for output in step_outputs:
+                if output.request_id != request_id or not output.outputs:
+                    continue
+
+                raw_text = output.outputs[0].text or ""
+                clean_text = _strip_think_tag(raw_text)
+                if clean_text.startswith(last_clean_text):
+                    delta = clean_text[len(last_clean_text) :]
+                else:
+                    delta = clean_text
+                last_clean_text = clean_text
+
+                usage = None
+                finished = output.finished and output.outputs[0].finished()
+                if finished:
+                    prompt_tokens = len(output.prompt_token_ids or [])
+                    completion_tokens = len(output.outputs[0].token_ids or [])
+                    usage = UsageReport(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens + completion_tokens,
+                    )
+
+                yield StreamChunk(
+                    delta=delta,
+                    text=clean_text,
+                    finished=finished,
+                    usage=usage,
+                )
+
     async def generate(self, history, user_message):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -133,3 +219,10 @@ async def generate_reply(history, user_message):
 
     engine = _ensure_local_engine()
     return await engine.generate(history, user_message)
+
+
+def stream_reply_chunks(history, user_message) -> Iterator[StreamChunk]:
+    """Yield streaming chunks from the locally hosted vLLM."""
+
+    engine = _ensure_local_engine()
+    yield from engine.stream_generate(history, user_message)

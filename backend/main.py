@@ -1,12 +1,19 @@
 import asyncio
+import json
 import logging
 
 from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import iterate_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from . import config
 from .schemas import ChatRequest, ChatResponse, GenerationConfig
-from .services.vllm_client import generate_reply, warm_up_local_engine
+from .services.vllm_client import (
+    generate_reply,
+    stream_reply_chunks,
+    warm_up_local_engine,
+)
 from .storage import (
     list_conversations,
     load_conversation,
@@ -15,6 +22,18 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _generation_config_payload():
+    return {
+        "max_new_tokens": config.MAX_NEW_TOKENS,
+        "temperature": config.TEMPERATURE,
+        "top_p": config.TOP_P,
+    }
+
+
+def _sse_payload(data):
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 app = FastAPI(
     title="Lexi Legal Chatbot API",
@@ -71,6 +90,78 @@ async def chat_endpoint(request: ChatRequest):
             top_p=config.TOP_P,
         ),
         usage=usage,
+    )
+
+
+@app.post("/chat/stream")
+async def chat_stream_endpoint(request: ChatRequest):
+    history_dicts = [msg.dict() for msg in request.history]
+
+    def event_stream():
+        final_reply = ""
+        last_usage = None
+
+        yield _sse_payload(
+            {
+                "type": "start",
+                "model": config.MODEL_DISPLAY_NAME,
+                "generation_config": _generation_config_payload(),
+            }
+        )
+
+        try:
+            for chunk in stream_reply_chunks(request.history, request.message):
+                final_reply = chunk.text
+                if chunk.usage is not None:
+                    last_usage = chunk.usage.model_dump()
+
+                yield _sse_payload(
+                    {
+                        "type": "delta",
+                        "text": chunk.text,
+                        "delta": chunk.delta,
+                        "finished": chunk.finished,
+                        "usage": last_usage,
+                    }
+                )
+
+            record = save_conversation(
+                request.conversation_id,
+                request.message,
+                final_reply,
+                history_dicts,
+            )
+
+            yield _sse_payload(
+                {
+                    "type": "final",
+                    "conversation_id": record["id"],
+                    "title": record.get("title", "New chat"),
+                    "reply": final_reply,
+                    "disclaimer": config.DISCLAIMER,
+                    "model": config.MODEL_DISPLAY_NAME,
+                    "generation_config": _generation_config_payload(),
+                    "usage": last_usage,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to stream response from vLLM.")
+            yield _sse_payload(
+                {
+                    "type": "error",
+                    "message": str(exc),
+                }
+            )
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        iterate_in_threadpool(event_stream()),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 
