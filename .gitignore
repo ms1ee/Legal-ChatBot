@@ -4,3 +4,4 @@ __pycache__/
 local_model/Qwen3-1.7B/
 local_model/merged/
 .vscode/
+.streamlit/
