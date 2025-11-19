@@ -217,22 +217,23 @@ from transformers import TextIteratorStreamer
 _GENERATE_LOCK = threading.Lock()
 
 class LocalHFEngine:
-    def __init__(self):
-        base_model = _maybe_resolve_local_path(config.LOCAL_BASE_MODEL)
+    def __init__(self, variant_name: str, profile: dict):
+        self.variant = variant_name
+        self.display_name = profile.get("display_name", variant_name)
+        
+        base_model = _maybe_resolve_local_path(profile.get("base_model"))
         tokenizer_source = base_model
 
-        adapter_path = config.LOCAL_LORA_MODEL
-        self.lora_path = None
+        adapter_path = profile.get("weights_path")
 
+        self.lora_path = None
         if adapter_path:
-            adapter_path = Path(adapter_path).expanduser()
-            adapter_cfg = adapter_path / "adapter_config.json"
-            if adapter_cfg.exists():
-                self.lora_path = str(adapter_path.resolve())
-            else:
-                resolved = str(adapter_path.resolve())
-                base_model = resolved
-                tokenizer_source = resolved
+             adapter_path = _maybe_resolve_local_path(adapter_path)
+             if adapter_path:
+                adapter_path = Path(adapter_path).expanduser()
+                adapter_cfg = adapter_path / "adapter_config.json"
+                if adapter_cfg.exists():
+                    self.lora_path = str(adapter_path.resolve())
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_source,
@@ -393,12 +394,16 @@ class LocalHFEngine:
 
 
 class LocalMLXEngine:
-    def __init__(self):
+    def __init__(self, variant_name: str, profile: dict):
+        self.variant = variant_name
+        self.display_name = profile.get("display_name", variant_name)
+        
         from mlx_lm import load as mlx_load, generate as mlx_generate, stream_generate as mlx_stream_generate
         from mlx_lm.sample_utils import make_sampler
         self._mlx_generate = mlx_generate
         self._mlx_stream_generate = mlx_stream_generate
-        model_id = _maybe_resolve_local_path(config.LOCAL_MERGED_MODEL)
+        
+        model_id = _maybe_resolve_local_path(profile.get("base_model"))
         logger.info("Loading MLX model from %s", model_id)
         self.model, self.tokenizer = mlx_load(model_id)
         if getattr(self.tokenizer, "pad_token", None) is None:
@@ -521,10 +526,10 @@ def _ensure_local_engine(variant: str):
 
         if framework == "hf-mps":
             logger.info("Bootstrapping HF engine for variant '%s'", variant)
-            engine = LocalHFEngine()
+            engine = LocalHFEngine(variant, profile)
         elif framework == "mlx":
             logger.info("Bootstrapping MLX engine for variant '%s'", variant)
-            engine = LocalMLXEngine()
+            engine = LocalMLXEngine(variant, profile)
         else:
             raise ValueError(f"Unknown framework '{framework}' for variant '{variant}'")
         _ENGINES[variant] = engine
