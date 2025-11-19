@@ -14,6 +14,11 @@ FRONTEND_DIR = Path(__file__).resolve().parent
 LOGO_PATH = FRONTEND_DIR.parent / "LexAI_Logo.png"
 LOGO_DATA_URI = ""
 PAGE_ICON = "⚖️"
+MODEL_VARIANT_OPTIONS = {
+    "finetuned": "LexAI (미세조정)",
+    "baseline": "Qwen3-1.7B (Baseline)",
+}
+DEFAULT_MODEL_VARIANT = "finetuned"
 
 if LOGO_PATH.exists():
     logo_bytes = LOGO_PATH.read_bytes()
@@ -79,6 +84,8 @@ def init_state():
         st.session_state.current_title = "New chat"
     if "title_cache" not in st.session_state:
         st.session_state.title_cache = {}
+    if "model_variant" not in st.session_state:
+        st.session_state.model_variant = DEFAULT_MODEL_VARIANT
 
 def reset_conversation():
     st.session_state.messages = []
@@ -226,11 +233,12 @@ def render_session_panel():
     )
 
 
-def stream_backend(prompt, history, conversation_id):
+def stream_backend(prompt, history, conversation_id, model_variant):
     payload = {
         "conversation_id": conversation_id,
         "message": prompt,
         "history": history,
+        "model_variant": model_variant,
     }
     with requests.post(
         f"{BACKEND_URL}/chat/stream",
@@ -280,7 +288,10 @@ def handle_user_prompt(prompt, conversation_placeholder):
     stream_notice_active = True
     try:
         for event in stream_backend(
-            prompt, history_payload, current_conversation_id
+            prompt,
+            history_payload,
+            current_conversation_id,
+            st.session_state.model_variant,
         ):
             event_type = event.get("type")
             if event_type == "start":
@@ -446,6 +457,22 @@ def main():
 
     with left_col:
         render_sidebar_header()
+        variant_keys = list(MODEL_VARIANT_OPTIONS.keys())
+        try:
+            default_variant_idx = variant_keys.index(st.session_state.model_variant)
+        except ValueError:
+            default_variant_idx = 0
+        st.caption("모델 선택")
+        selected_variant = st.radio(
+            "모델 선택",
+            options=variant_keys,
+            index=default_variant_idx,
+            format_func=lambda key: MODEL_VARIANT_OPTIONS[key],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="model_variant_selector",
+        )
+        st.session_state.model_variant = selected_variant
         if st.button(
             "새 채팅", key="left-new-chat", use_container_width=True, type="secondary"
         ):

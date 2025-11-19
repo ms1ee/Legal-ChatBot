@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import logging
 import re
 from collections.abc import Iterator
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.entrypoints.utils import _validate_truncation_size
@@ -18,9 +20,16 @@ from ..schemas import UsageReport
 
 logger = logging.getLogger(__name__)
 
-_LOCAL_ENGINE = None
 THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
+
+
+@dataclass
+class StreamChunk:
+    delta: str
+    text: str
+    finished: bool
+    usage: UsageReport | None = None
 
 
 def _strip_think_tag(text):
@@ -51,22 +60,17 @@ def _maybe_resolve_local_path(path_like):
     return str(path_like)
 
 
-@dataclass
-class StreamChunk:
-    delta: str
-    text: str
-    finished: bool
-    usage: UsageReport | None = None
-
-
 class LocalVLLMEngine:
-    def __init__(self):
+    def __init__(self, variant_name: str, profile: dict):
         self.lora_request: LoRARequest | None = None
+        self.variant = variant_name
+        self.display_name = profile.get("display_name", variant_name)
 
-        base_model = _maybe_resolve_local_path(config.LOCAL_BASE_MODEL)
+        base_model = _maybe_resolve_local_path(profile.get("base_model"))
         tokenizer_source = base_model
 
-        adapter_path = config.LOCAL_WEIGHTS_PATH
+        adapter_path = profile.get("weights_path")
+        adapter_path = _maybe_resolve_local_path(adapter_path)
         if adapter_path:
             adapter_path = Path(adapter_path).expanduser()
             adapter_cfg = adapter_path / "adapter_config.json"
@@ -198,31 +202,67 @@ class LocalVLLMEngine:
             None, self._generate_sync, history, user_message
         )
 
-## 서버 키자마자 vLLM Engine 초기화 & 모델 로드 바로 해
-## vLLM 엔진 초기화 한번만 할 수 있도록 체크하는 역할도 함
-def _ensure_local_engine():
-    global _LOCAL_ENGINE
-    if _LOCAL_ENGINE is None:
-        logger.info("Bootstrapping local vLLM engine with model %s", config.LOCAL_BASE_MODEL)
-        _LOCAL_ENGINE = LocalVLLMEngine()
-    return _LOCAL_ENGINE
+    def shutdown(self):
+        """Release engine resources."""
 
+        try:
+            engine = getattr(self.llm, "llm_engine", None)
+            if engine and hasattr(engine, "shutdown"):
+                engine.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to shutdown vLLM engine cleanly: %s", exc)
+
+_ENGINE: LocalVLLMEngine | None = None
+_ACTIVE_VARIANT: str | None = None
+
+def _get_variant_profile(variant: str) -> dict:
+    try:
+        return config.MODEL_VARIANTS[variant]
+    except KeyError as exc:
+        raise ValueError(f"Unknown model variant '{variant}'") from exc
+
+def _ensure_local_engine(variant: str):
+    global _ENGINE, _ACTIVE_VARIANT
+
+    if _ENGINE is not None and _ACTIVE_VARIANT == variant:
+        return _ENGINE
+
+    if _ENGINE is not None:
+        logger.info("Unloading vLLM engine for variant '%s'", _ACTIVE_VARIANT)
+        try:
+            _ENGINE.shutdown()
+        finally:
+            _ENGINE = None
+            _ACTIVE_VARIANT = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+
+    profile = _get_variant_profile(variant)
+    logger.info(
+        "Bootstrapping vLLM engine for variant '%s' with base model %s",
+        variant,
+        profile.get("base_model"),
+    )
+    _ENGINE = LocalVLLMEngine(variant, profile)
+    _ACTIVE_VARIANT = variant
+    return _ENGINE
 
 def warm_up_local_engine():
     """Eagerly initialize the local vLLM engine so chat requests don't block."""
 
-    _ensure_local_engine()
+    _ensure_local_engine(config.DEFAULT_MODEL_VARIANT)
 
 
-async def generate_reply(history, user_message):
+async def generate_reply(history, user_message, model_variant):
     """Generate a reply via the locally hosted vLLM."""
 
-    engine = _ensure_local_engine()
-    return await engine.generate(history, user_message)
+    engine = _ensure_local_engine(model_variant)
+    return await engine.generate(history, user_message), engine.display_name
 
 
-def stream_reply_chunks(history, user_message) -> Iterator[StreamChunk]:
-    """Yield streaming chunks from the locally hosted vLLM."""
+def stream_reply_chunks(history, user_message, model_variant):
+    """Return display name and streaming iterator."""
 
-    engine = _ensure_local_engine()
-    yield from engine.stream_generate(history, user_message)
+    engine = _ensure_local_engine(model_variant)
+    return engine.display_name, engine.stream_generate(history, user_message)

@@ -66,7 +66,11 @@ async def health_check():
 async def chat_endpoint(request: ChatRequest):
     history_dicts = [msg.dict() for msg in request.history]
     try:
-        reply, usage = await generate_reply(request.history, request.message)
+        (reply, usage), model_label = await generate_reply(
+            request.history, request.message, request.model_variant
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get response from vLLM.")
         raise HTTPException(status_code=502, detail=str(exc))
@@ -83,7 +87,7 @@ async def chat_endpoint(request: ChatRequest):
         title=record.get("title", "New chat"),
         reply=reply,
         disclaimer=config.DISCLAIMER,
-        model=config.MODEL_DISPLAY_NAME,
+        model=model_label,
         generation_config=GenerationConfig(
             max_new_tokens=config.MAX_NEW_TOKENS,
             temperature=config.TEMPERATURE,
@@ -101,16 +105,20 @@ async def chat_stream_endpoint(request: ChatRequest):
         final_reply = ""
         last_usage = None
 
-        yield _sse_payload(
-            {
-                "type": "start",
-                "model": config.MODEL_DISPLAY_NAME,
-                "generation_config": _generation_config_payload(),
-            }
-        )
-
         try:
-            for chunk in stream_reply_chunks(request.history, request.message):
+            model_label, generator = stream_reply_chunks(
+                request.history, request.message, request.model_variant
+            )
+
+            yield _sse_payload(
+                {
+                    "type": "start",
+                    "model": model_label,
+                    "generation_config": _generation_config_payload(),
+                }
+            )
+
+            for chunk in generator:
                 final_reply = chunk.text
                 if chunk.usage is not None:
                     last_usage = chunk.usage.model_dump()
@@ -139,11 +147,13 @@ async def chat_stream_endpoint(request: ChatRequest):
                     "title": record.get("title", "New chat"),
                     "reply": final_reply,
                     "disclaimer": config.DISCLAIMER,
-                    "model": config.MODEL_DISPLAY_NAME,
+                    "model": model_label,
                     "generation_config": _generation_config_payload(),
                     "usage": last_usage,
                 }
             )
+        except ValueError as exc:
+            yield _sse_payload({"type": "error", "message": str(exc)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to stream response from vLLM.")
             yield _sse_payload(

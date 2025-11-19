@@ -5,8 +5,25 @@ MAX_NEW_TOKENS = 8192
 TEMPERATURE = 0
 TOP_P = 0.1
 
-LOCAL_BASE_MODEL = "Qwen/Qwen3-1.7B"
-LOCAL_WEIGHTS_PATH = Path("local_model/")
+BASELINE_MODEL = "Qwen/Qwen3-1.7B"
+FINETUNED_MODEL = "Qwen/Qwen3-1.7B"
+FINETUNED_WEIGHTS_PATH = Path("local_model/")
+MODEL_VARIANTS = {
+    "baseline": {
+        "display_name": "Qwen3-1.7B (Baseline)",
+        "base_model": BASELINE_MODEL,
+        "weights_path": None,
+    },
+    "finetuned": {
+        "display_name": MODEL_DISPLAY_NAME,
+        "base_model": FINETUNED_MODEL,
+        "weights_path": FINETUNED_WEIGHTS_PATH,
+    },
+}
+DEFAULT_MODEL_VARIANT = "finetuned"
+
+LOCAL_BASE_MODEL = FINETUNED_MODEL
+LOCAL_WEIGHTS_PATH = FINETUNED_WEIGHTS_PATH
 TENSOR_PARALLEL_SIZE = 4
 GPU_MEMORY_UTILIZATION = 0.85
 
