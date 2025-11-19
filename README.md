@@ -1,4 +1,4 @@
-# Lexi Legal Chatbot
+# LexAI Legal Chatbot
 
 ## Setup
 1. Conda 환경
