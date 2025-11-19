@@ -10,8 +10,6 @@ from PIL import Image
 from css import THEME_CHOICES, get_theme_css
 
 BACKEND_URL = os.getenv("LEXAI_BACKEND_URL", "http://127.0.0.1:9000")
-COLUMN_HEIGHT = 780
-CHAT_LOG_HEIGHT = 520
 FRONTEND_DIR = Path(__file__).resolve().parent
 LOGO_PATH = FRONTEND_DIR.parent / "LexAI_Logo.png"
 LOGO_DATA_URI = ""
@@ -141,14 +139,16 @@ def render_theme_controls():
 
 def render_message(message):
     is_assistant = message["role"] == "assistant"
-    avatar = "🤖" if is_assistant else "🧑‍⚖️"
     bubble_class = "chat-assistant" if is_assistant else "chat-user"
     alignment = "flex-start" if is_assistant else "flex-end"
+    is_pending = (
+        is_assistant and (message["content"] or "").strip() == "Lexi가 응답 중입니다…"
+    )
+    extra_class = " ping-bubble" if is_pending else ""
     st.markdown(
         f"""
         <div style="display: flex; justify-content:{alignment};">
-            <div class="chat-bubble {bubble_class}">
-                <span class="avatar">{avatar}</span>
+            <div class="chat-bubble {bubble_class}{extra_class}">
                 <span class="message-text">{message["content"]}</span>
             </div>
         </div>
@@ -159,7 +159,6 @@ def render_message(message):
 
 def render_conversation(conversation_placeholder):
     conversation_placeholder.empty()
-    hero_prompt = None
     with conversation_placeholder.container():
         st.markdown('<div class="conversation-shell">', unsafe_allow_html=True)
         st.markdown(
@@ -179,10 +178,10 @@ def render_conversation(conversation_placeholder):
                 """,
                 unsafe_allow_html=True,
             )
-            hero_prompt = render_hero_input()
+        st.markdown('<div id="conversation-bottom"></div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
-    return chat_started, hero_prompt
+    return chat_started
 
 
 def render_session_panel():
@@ -225,33 +224,6 @@ def render_session_panel():
         """,
         unsafe_allow_html=True,
     )
-
-
-def render_hero_input():
-    st.session_state.setdefault("hero_prompt_input", "")
-    if st.session_state.pop("hero_prompt_reset_pending", False):
-        st.session_state.hero_prompt_input = ""
-
-    st.markdown('<div class="hero-input-wrapper">', unsafe_allow_html=True)
-    hero_prompt = st.text_area(
-        "LexAI에게 물어보기",
-        key="hero_prompt_input",
-        placeholder="법률 관련 질문을 입력하세요.",
-        label_visibility="collapsed",
-        height=120,
-    )
-    send = st.button(
-        "질문 보내기",
-        key="hero_submit",
-        use_container_width=True,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-    if send:
-        text = (hero_prompt or "").strip()
-        if text:
-            st.session_state.hero_prompt_reset_pending = True
-            return text
-    return None
 
 
 def stream_backend(prompt, history, conversation_id):
@@ -463,16 +435,17 @@ def main():
     if not st.session_state.conversations_loaded:
         refresh_conversation_list()
 
+    current_theme = st.session_state.ui_theme
+    theme_style_slot.markdown(
+        get_theme_css(current_theme),
+        unsafe_allow_html=True,
+    )
+
     st.markdown('<div class="lexi-columns-marker"></div>', unsafe_allow_html=True)
     left_col, right_col = st.columns([0.26, 0.74], gap="medium")
 
     with left_col:
         render_sidebar_header()
-        # current_theme = render_theme_controls()
-        current_theme = st.session_state.ui_theme
-        theme_style_slot.markdown(
-            get_theme_css(current_theme), unsafe_allow_html=True
-        )
         if st.button(
             "새 채팅", key="left-new-chat", use_container_width=True, type="secondary"
         ):
@@ -487,7 +460,7 @@ def main():
             placeholder="대화목록 검색하기",
             label_visibility="collapsed",
         )
-        log_container = st.container(height=CHAT_LOG_HEIGHT, border=False)
+        log_container = st.container(border=False)
         with log_container:
             st.markdown('<div class="chat-log-list scrollable">', unsafe_allow_html=True)
             conversations = st.session_state.conversation_list
@@ -558,16 +531,19 @@ def main():
     current_title = st.session_state.get("current_title", "New chat")
 
     with right_col:
-        with st.container(height=COLUMN_HEIGHT, border=False):
+        with st.container(border=False):
+            conversation_placeholder = st.empty()
+            chat_started = render_conversation(conversation_placeholder)
+            hero_mode = not chat_started
             st.markdown(
-                f'<div class="workspace-title">{current_title}</div>',
+                f"""
+                <script>
+                document.body.dataset.heroMode = '{str(hero_mode).lower()}';
+                </script>
+                """,
                 unsafe_allow_html=True,
             )
-            conversation_placeholder = st.empty()
-            chat_started, hero_prompt = render_conversation(conversation_placeholder)
-            prompt = hero_prompt if not chat_started else st.chat_input(
-                "LexAI에게 물어보기"
-            )
+            prompt = st.chat_input("LexAI에게 물어보기")
             if prompt:
                 handle_user_prompt(prompt, conversation_placeholder)
                 st.rerun()
