@@ -15,9 +15,11 @@ LOGO_PATH = FRONTEND_DIR.parent / "LexAI_Logo.png"
 LOGO_DATA_URI = ""
 PAGE_ICON = "⚖️"
 MODEL_VARIANT_OPTIONS = {
-    "finetuned": "LexAI (미세조정)",
+    "finetuned": "LexAI (sft+rlvr)",
     "baseline": "Qwen3-1.7B (Baseline)",
+    "compare": "LexAI vs Baseline (비교)",
 }
+COMPARISON_VARIANTS = ["finetuned", "baseline"]
 DEFAULT_MODEL_VARIANT = "finetuned"
 
 if LOGO_PATH.exists():
@@ -65,8 +67,11 @@ def init_state():
     if "session_meta" not in st.session_state:
         st.session_state.session_meta = {
             "model": "대기 중",
+            "mode": "single",
+            "variant_models": [],
             "generation_config": {},
             "usage": {},
+            "compare_usage": {},
         }
     if "conversation_id" not in st.session_state:
         st.session_state.conversation_id = None
@@ -86,17 +91,23 @@ def init_state():
         st.session_state.title_cache = {}
     if "model_variant" not in st.session_state:
         st.session_state.model_variant = DEFAULT_MODEL_VARIANT
+    if "turn_counter" not in st.session_state:
+        st.session_state.turn_counter = 0
 
 def reset_conversation():
     st.session_state.messages = []
     st.session_state.session_meta = {
         "model": "대기 중",
+        "mode": "single",
+        "variant_models": [],
         "generation_config": {},
         "usage": {},
+        "compare_usage": {},
     }
     st.session_state.disclaimer = ""
     st.session_state.conversation_id = None
     st.session_state.current_title = "New chat"
+    st.session_state.turn_counter = 0
 
 
 def _theme_label_from_key(theme_key):
@@ -144,6 +155,23 @@ def render_theme_controls():
     return st.session_state.ui_theme
 
 
+def _bubble_html(message, bubble_class, extra_class=""):
+    variant = message.get("variant")
+    variant_label = message.get("variant_label")
+    variant_attr = f' data-variant="{variant}"' if variant else ""
+    label_html = (
+        f'<div class="bubble-variant">{variant_label}</div>'
+        if variant_label
+        else ""
+    )
+    return (
+        f'<div class="chat-bubble {bubble_class}{extra_class}"{variant_attr}>'
+        f"{label_html}"
+        f'<span class="message-text">{message["content"]}</span>'
+        "</div>"
+    )
+
+
 def render_message(message):
     is_assistant = message["role"] == "assistant"
     bubble_class = "chat-assistant" if is_assistant else "chat-user"
@@ -152,16 +180,31 @@ def render_message(message):
         is_assistant and (message["content"] or "").strip() == "Lexi가 응답 중입니다…"
     )
     extra_class = " ping-bubble" if is_pending else ""
+    bubble_html = _bubble_html(message, bubble_class, extra_class)
     st.markdown(
         f"""
-        <div style="display: flex; justify-content:{alignment};">
-            <div class="chat-bubble {bubble_class}{extra_class}">
-                <span class="message-text">{message["content"]}</span>
-            </div>
+        <div class="chat-row" data-role="{message['role']}" style="display:flex; justify-content:{alignment};">
+            {bubble_html}
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_compare_group(messages):
+    ordered = sorted(
+        messages,
+        key=lambda msg: COMPARISON_VARIANTS.index(msg.get("variant"))
+        if msg.get("variant") in COMPARISON_VARIANTS
+        else 0,
+    )
+    html_parts = ['<div class="compare-group">']
+    for message in ordered:
+        html_parts.append(
+            f'<div class="compare-item">{_bubble_html(message, "chat-assistant")}</div>'
+        )
+    html_parts.append("</div>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 
 
 def render_conversation(conversation_placeholder):
@@ -173,8 +216,32 @@ def render_conversation(conversation_placeholder):
         )
         chat_started = any(msg["role"] == "user" for msg in st.session_state.messages)
         if chat_started:
-            for message in st.session_state.messages:
+            idx = 0
+            messages = st.session_state.messages
+            total = len(messages)
+            while idx < total:
+                message = messages[idx]
+                if (
+                    message["role"] == "assistant"
+                    and message.get("variant")
+                    and message.get("turn_id") is not None
+                ):
+                    turn_id = message.get("turn_id")
+                    group = []
+                    while (
+                        idx < total
+                        and messages[idx]["role"] == "assistant"
+                        and messages[idx].get("turn_id") == turn_id
+                    ):
+                        group.append(messages[idx])
+                        idx += 1
+                    if len(group) > 1:
+                        render_compare_group(group)
+                    else:
+                        render_message(group[0])
+                    continue
                 render_message(message)
+                idx += 1
         else:
             st.markdown(
                 """
@@ -194,12 +261,33 @@ def render_conversation(conversation_placeholder):
 def render_session_panel():
     meta = st.session_state.session_meta
     cfg = meta.get("generation_config") or {}
+    compare_mode = meta.get("mode") == "compare"
+    variant_models = meta.get("variant_models") or []
     usage = meta.get("usage") or {}
+    compare_usage = meta.get("compare_usage") or {}
+
+    if compare_mode and variant_models:
+        display_name = " vs ".join(
+            entry.get("model", entry.get("variant", ""))
+            for entry in variant_models
+        )
+    else:
+        display_name = meta.get("model", "알 수 없음")
+
+    model_rows = ""
+    if compare_mode and variant_models:
+        model_rows = "".join(
+            f"<li><span>{MODEL_VARIANT_OPTIONS.get(entry.get('variant'), entry.get('model'))}</span>"
+            f"<strong>{entry.get('model')}</strong></li>"
+            for entry in variant_models
+        )
+        model_rows = f'<ul class="compare-model-list">{model_rows}</ul>'
+
     st.markdown(
         f"""
         <div class="session-card">
             <small>MODEL</small>
-            <div class="session-headline">{meta.get("model", "알 수 없음")}</div>
+            <div class="session-headline">{display_name}</div>
             <div class="session-metrics">
                 <div>
                     <strong>{cfg.get("temperature", "-")}</strong>
@@ -214,19 +302,50 @@ def render_session_panel():
                     <span>max&nbsp;tokens</span>
                 </div>
             </div>
+            {model_rows}
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    if compare_mode and variant_models:
+        usage_rows = ""
+        for entry in variant_models:
+            variant = entry.get("variant")
+            usage_info = compare_usage.get(variant) or {}
+            usage_stats = usage_info.get("usage") or usage_info
+            prompt_tokens = usage_stats.get("prompt_tokens", "–")
+            completion_tokens = usage_stats.get("completion_tokens", "–")
+            total_tokens = usage_stats.get("total_tokens", "–")
+            usage_rows += (
+                "<div class='compare-usage-row'>"
+                f"<span>{MODEL_VARIANT_OPTIONS.get(variant, entry.get('model'))}</span>"
+                f"<div class='token-stats'>"
+                f"<strong>P&nbsp;{prompt_tokens}</strong>"
+                f"<strong>R&nbsp;{completion_tokens}</strong>"
+                f"<strong>T&nbsp;{total_tokens}</strong>"
+                "</div>"
+                "</div>"
+            )
+        usage_html = (
+            f"<div class='compare-usage-table'>{usage_rows}</div>"
+            if usage_rows
+            else "<div class='session-usage'>데이터 없음</div>"
+        )
+    else:
+        usage_html = (
+            "<div class='session-usage'>"
+            f"<div>프롬프트 <strong>{usage.get('prompt_tokens', '–')}</strong></div>"
+            f"<div>응답 <strong>{usage.get('completion_tokens', '–')}</strong></div>"
+            f"<div>총합 <strong>{usage.get('total_tokens', '–')}</strong></div>"
+            "</div>"
+        )
+
     st.markdown(
         f"""
         <div class="session-card">
             <small>USAGE</small>
-            <div class="session-usage">
-                <div>프롬프트 <strong>{usage.get("prompt_tokens", "–")}</strong></div>
-                <div>응답 <strong>{usage.get("completion_tokens", "–")}</strong></div>
-                <div>총합 <strong>{usage.get("total_tokens", "–")}</strong></div>
-            </div>
+            {usage_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -275,17 +394,41 @@ def handle_user_prompt(prompt, conversation_placeholder):
     ]
     current_conversation_id = st.session_state.conversation_id
 
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    assistant_message = {
-        "role": "assistant",
-        "content": "Lexi가 응답 중입니다…",
-    }
-    st.session_state.messages.append(assistant_message)
+    st.session_state.turn_counter += 1
+    turn_id = st.session_state.turn_counter
+
+    st.session_state.messages.append(
+        {"role": "user", "content": prompt, "turn_id": turn_id}
+    )
+
+    selected_variant = st.session_state.model_variant
+    compare_mode = selected_variant == "compare"
+    variant_sequence = (
+        COMPARISON_VARIANTS if compare_mode else [selected_variant]
+    )
+
+    assistant_placeholders: dict[str, dict] = {}
+    placeholder_stack: list[dict] = []
+
+    for variant in variant_sequence:
+        label = MODEL_VARIANT_OPTIONS.get(variant, variant)
+        placeholder = {
+            "role": "assistant",
+            "content": "Lexi가 응답 중입니다…",
+            "variant": variant if variant != "compare" else None,
+            "variant_label": label,
+            "turn_id": turn_id,
+        }
+        st.session_state.messages.append(placeholder)
+        assistant_placeholders[variant] = placeholder
+        placeholder_stack.append(placeholder)
+
+    primary_assistant = placeholder_stack[0] if placeholder_stack else None
     render_conversation(conversation_placeholder)
 
     final_received = False
     stream_failed = False
-    stream_notice_active = True
+    stream_notice_active = {variant: True for variant in assistant_placeholders}
     try:
         for event in stream_backend(
             prompt,
@@ -295,41 +438,85 @@ def handle_user_prompt(prompt, conversation_placeholder):
         ):
             event_type = event.get("type")
             if event_type == "start":
+                start_mode = event.get("mode", "single")
+                variant_models = event.get("models") or []
+                if not variant_models and selected_variant != "compare":
+                    variant_models = [
+                        {
+                            "variant": selected_variant,
+                            "model": event.get("model", "미상"),
+                        }
+                    ]
+                if start_mode == "compare" and variant_models:
+                    display_model = " vs ".join(
+                        entry.get("model", entry.get("variant", ""))
+                        for entry in variant_models
+                    )
+                else:
+                    display_model = event.get("model", "미상")
                 st.session_state.session_meta = {
-                    "model": event.get("model", "미상"),
+                    "model": display_model,
+                    "mode": start_mode,
+                    "variant_models": variant_models,
                     "generation_config": event.get("generation_config", {}),
                     "usage": {},
+                    "compare_usage": {},
                 }
             elif event_type == "delta":
+                variant = event.get("variant", selected_variant)
                 text = event.get("text")
-                if text is not None:
-                    assistant_message["content"] = text or assistant_message["content"]
-                    if stream_notice_active:
-                        stream_notice_active = False
+                target = assistant_placeholders.get(variant, primary_assistant)
+                if target is not None and text is not None:
+                    target["content"] = text or target["content"]
+                    if stream_notice_active.get(variant):
+                        stream_notice_active[variant] = False
                     render_conversation(conversation_placeholder)
             elif event_type == "final":
-                assistant_message["content"] = event.get(
-                    "reply", assistant_message["content"]
-                )
+                variant = event.get("variant", selected_variant)
+                mode = event.get("mode", "single")
+                variant_payloads = event.get("variants") or {}
+                if event.get("models"):
+                    st.session_state.session_meta["variant_models"] = event.get(
+                        "models"
+                    )
+                if mode == "compare":
+                    for compare_variant, payload in variant_payloads.items():
+                        target = assistant_placeholders.get(
+                            compare_variant, primary_assistant
+                        )
+                        if target is not None and payload.get("reply"):
+                            target["content"] = payload["reply"]
+                    st.session_state.session_meta["compare_usage"] = variant_payloads
+                else:
+                    target = assistant_placeholders.get(variant, primary_assistant)
+                    if target is not None:
+                        target["content"] = event.get("reply", target["content"])
+                    st.session_state.session_meta["usage"] = (
+                        event.get("usage", {}) or {}
+                    )
+
                 st.session_state.disclaimer = event.get(
                     "disclaimer", st.session_state.disclaimer
                 )
-                st.session_state.session_meta["model"] = event.get(
-                    "model",
-                    st.session_state.session_meta.get("model", "미상"),
-                )
-                st.session_state.session_meta["generation_config"] = event.get(
-                    "generation_config",
-                    st.session_state.session_meta.get("generation_config", {}),
-                )
-                st.session_state.session_meta["usage"] = event.get("usage", {}) or {}
+                if event.get("model"):
+                    st.session_state.session_meta["model"] = event.get("model")
+                if event.get("generation_config"):
+                    st.session_state.session_meta["generation_config"] = event.get(
+                        "generation_config"
+                    )
                 st.session_state.conversation_id = event.get(
                     "conversation_id",
                     st.session_state.get("conversation_id"),
                 )
-                preview_title = _preview_text(
-                    event.get("reply"), assistant_message["content"]
-                )
+                raw_reply = event.get("reply")
+                if not raw_reply and mode == "compare":
+                    for payload in variant_payloads.values():
+                        if payload.get("reply"):
+                            raw_reply = payload["reply"]
+                            break
+                if not raw_reply:
+                    raw_reply = (primary_assistant or {}).get("content", "")
+                preview_title = _preview_text(raw_reply)
                 st.session_state.current_title = preview_title
                 if st.session_state.conversation_id:
                     st.session_state.title_cache[
@@ -347,7 +534,9 @@ def handle_user_prompt(prompt, conversation_placeholder):
         st.error(f"Backend error: {exc}")
     finally:
         if stream_failed or not final_received:
-            st.session_state.messages.pop()
+            for _ in placeholder_stack:
+                if st.session_state.messages:
+                    st.session_state.messages.pop()
         else:
             refresh_conversation_list()
 
@@ -400,6 +589,9 @@ def load_conversation(conversation_id):
     st.session_state.current_title = preview_title
     if record.get("id"):
         st.session_state.title_cache[record["id"]] = preview_title
+    st.session_state.turn_counter = sum(
+        1 for msg in st.session_state.messages if msg.get("role") == "user"
+    )
 
 
 def start_rename(conversation):

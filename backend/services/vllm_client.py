@@ -1,6 +1,6 @@
 import asyncio
-import gc
 import logging
+import os
 import re
 from collections.abc import Iterator
 from copy import deepcopy
@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torch
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.entrypoints.utils import _validate_truncation_size
@@ -92,12 +91,19 @@ class LocalVLLMEngine:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        tensor_parallel = int(
+            profile.get("tensor_parallel_size", config.TENSOR_PARALLEL_SIZE)
+        )
+        gpu_utilization = float(
+            profile.get("gpu_memory_utilization", config.GPU_MEMORY_UTILIZATION)
+        )
+
         self.llm = LLM(
             model=base_model,
             tokenizer=tokenizer_source,
-            tensor_parallel_size=config.TENSOR_PARALLEL_SIZE,
+            tensor_parallel_size=tensor_parallel,
             trust_remote_code=True,
-            gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
+            gpu_memory_utilization=gpu_utilization,
             enable_lora=self.lora_request is not None,
         )
 
@@ -202,18 +208,7 @@ class LocalVLLMEngine:
             None, self._generate_sync, history, user_message
         )
 
-    def shutdown(self):
-        """Release engine resources."""
-
-        try:
-            engine = getattr(self.llm, "llm_engine", None)
-            if engine and hasattr(engine, "shutdown"):
-                engine.shutdown()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to shutdown vLLM engine cleanly: %s", exc)
-
-_ENGINE: LocalVLLMEngine | None = None
-_ACTIVE_VARIANT: str | None = None
+_ENGINES: dict[str, LocalVLLMEngine] = {}
 
 def _get_variant_profile(variant: str) -> dict:
     try:
@@ -222,36 +217,39 @@ def _get_variant_profile(variant: str) -> dict:
         raise ValueError(f"Unknown model variant '{variant}'") from exc
 
 def _ensure_local_engine(variant: str):
-    global _ENGINE, _ACTIVE_VARIANT
-
-    if _ENGINE is not None and _ACTIVE_VARIANT == variant:
-        return _ENGINE
-
-    if _ENGINE is not None:
-        logger.info("Unloading vLLM engine for variant '%s'", _ACTIVE_VARIANT)
+    engine = _ENGINES.get(variant)
+    if engine is None:
+        profile = _get_variant_profile(variant)
+        device_scope = profile.get("device_ids")
+        logger.info(
+            "Bootstrapping vLLM engine for variant '%s' with base model %s (devices=%s)",
+            variant,
+            profile.get("base_model"),
+            device_scope or "all",
+        )
+        previous_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
         try:
-            _ENGINE.shutdown()
+            if device_scope:
+                os.environ["CUDA_VISIBLE_DEVICES"] = device_scope
+            engine = LocalVLLMEngine(variant, profile)
         finally:
-            _ENGINE = None
-            _ACTIVE_VARIANT = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
+            if device_scope:
+                if previous_devices is None:
+                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = previous_devices
 
-    profile = _get_variant_profile(variant)
-    logger.info(
-        "Bootstrapping vLLM engine for variant '%s' with base model %s",
-        variant,
-        profile.get("base_model"),
-    )
-    _ENGINE = LocalVLLMEngine(variant, profile)
-    _ACTIVE_VARIANT = variant
-    return _ENGINE
+        _ENGINES[variant] = engine
+    return engine
 
 def warm_up_local_engine():
     """Eagerly initialize the local vLLM engine so chat requests don't block."""
 
-    _ensure_local_engine(config.DEFAULT_MODEL_VARIANT)
+    for variant_key in config.MODEL_VARIANTS.keys():
+        try:
+            _ensure_local_engine(variant_key)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to warm up variant: %s", variant_key)
 
 
 async def generate_reply(history, user_message, model_variant):

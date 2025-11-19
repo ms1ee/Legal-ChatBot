@@ -29,7 +29,7 @@ class ChatRequest(BaseModel):
         default_factory=list,
         description="Chronological chat history excluding the new user message.",
     )
-    model_variant: Literal["baseline", "finetuned"] = Field(
+    model_variant: Literal["baseline", "finetuned", "compare"] = Field(
         default=config.DEFAULT_MODEL_VARIANT
     )
 

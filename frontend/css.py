@@ -227,6 +227,44 @@ header[data-testid="stHeader"] {
     color: var(--text-primary);
     margin-left: 0.3rem;
 }
+.compare-model-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.8rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.compare-model-list li {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+.compare-model-list li strong {
+    color: var(--text-primary);
+}
+.compare-usage-table {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+.compare-usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.compare-usage-row .token-stats {
+    display: flex;
+    gap: 0.5rem;
+}
+.compare-usage-row strong {
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
 .chat-log-list {
     flex: 1;
     overflow-y: auto;
@@ -276,18 +314,37 @@ header[data-testid="stHeader"] {
     padding-right: 0.35rem;
     padding-bottom: 4rem;
 }
+.chat-row[data-role="assistant"] {
+    justify-content: flex-start;
+}
+.chat-row[data-role="user"] {
+    justify-content: flex-end;
+}
 .chat-bubble {
     border-radius: 22px;
     padding: 0.55rem 0.95rem;
     margin: 0.2rem 0;
     max-width: 92%;
     display: inline-flex;
+    flex-direction: column;
+    gap: 0.25rem;
     border: 1px solid var(--bubble-border);
     box-shadow: var(--bubble-shadow);
     backdrop-filter: blur(7px);
 }
+.chat-bubble[data-variant] {
+    max-width: 100%;
+    width: 100%;
+}
 .chat-bubble.ping-bubble {
     animation: pingGlow 1.4s ease-in-out infinite;
+}
+.bubble-variant {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
 }
 .ping-bubble .message-text::after {
     content: "";
@@ -316,25 +373,41 @@ header[data-testid="stHeader"] {
     background: var(--chat-assistant-bg);
 }
 .message-text {
-    line-height: 1.55;
+    line-height: 1.4;
     white-space: pre-wrap;
 }
 .message-text p {
-    margin: 0.35rem 0 0.25rem;
-    line-height: 1.4;
+    margin: 0.2rem 0 0.15rem;
+    line-height: 1.32;
 }
 .message-text p + p {
-    margin-top: 0.2rem;
+    margin-top: 0.15rem;
 }
 .message-text ul,
 .message-text ol {
-    margin: 0.2rem 0;
-    padding-left: 1.1rem;
-    line-height: 1.35;
+    margin: 0.15rem 0;
+    padding-left: 0.9rem;
+    line-height: 1.28;
+    list-style-position: inside;
 }
 .message-text li {
-    margin-bottom: 0.05rem;
-    line-height: 1.3;
+    margin-bottom: 0.02rem;
+    line-height: 1.25;
+}
+.compare-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+    width: 100%;
+    margin: 0.4rem 0;
+    align-items: flex-start;
+}
+.compare-item {
+    display: block;
+}
+.compare-group .chat-bubble {
+    width: 100%;
+    max-width: none;
 }
 .hero-state {
     margin-top: 10%;
@@ -415,7 +488,7 @@ div[data-testid="stChatInput"] button {
     font-weight: 600;
     letter-spacing: 0.03em;
     box-shadow: 0 16px 34px rgba(45, 126, 247, 0.35);
-    margin-bottom: 4px;
+    margin-bottom: 5px;
 }
 div[data-testid="stChatInput"] button svg {
     display: none;

@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+from queue import Queue
+from threading import Thread
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import iterate_in_threadpool
@@ -65,6 +67,10 @@ async def health_check():
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     history_dicts = [msg.dict() for msg in request.history]
+    if request.model_variant == "compare":
+        raise HTTPException(
+            status_code=400, detail="비교 모드는 스트리밍 API에서만 지원됩니다."
+        )
     try:
         (reply, usage), model_label = await generate_reply(
             request.history, request.message, request.model_variant
@@ -97,27 +103,33 @@ async def chat_endpoint(request: ChatRequest):
     )
 
 
-@app.post("/chat/stream")
-async def chat_stream_endpoint(request: ChatRequest):
-    history_dicts = [msg.dict() for msg in request.history]
-
+def _single_stream_generator(request: ChatRequest, history_dicts):
     def event_stream():
-        final_reply = ""
-        last_usage = None
-
         try:
             model_label, generator = stream_reply_chunks(
                 request.history, request.message, request.model_variant
             )
+        except ValueError as exc:
+            yield _sse_payload({"type": "error", "message": str(exc)})
+            yield "data: [DONE]\n\n"
+            return
 
-            yield _sse_payload(
-                {
-                    "type": "start",
-                    "model": model_label,
-                    "generation_config": _generation_config_payload(),
-                }
-            )
+        final_reply = ""
+        last_usage = None
 
+        yield _sse_payload(
+            {
+                "type": "start",
+                "mode": "single",
+                "model": model_label,
+                "models": [
+                    {"variant": request.model_variant, "model": model_label}
+                ],
+                "generation_config": _generation_config_payload(),
+            }
+        )
+
+        try:
             for chunk in generator:
                 final_reply = chunk.text
                 if chunk.usage is not None:
@@ -126,6 +138,9 @@ async def chat_stream_endpoint(request: ChatRequest):
                 yield _sse_payload(
                     {
                         "type": "delta",
+                        "mode": "single",
+                        "variant": request.model_variant,
+                        "model": model_label,
                         "text": chunk.text,
                         "delta": chunk.delta,
                         "finished": chunk.finished,
@@ -143,17 +158,19 @@ async def chat_stream_endpoint(request: ChatRequest):
             yield _sse_payload(
                 {
                     "type": "final",
+                    "mode": "single",
                     "conversation_id": record["id"],
                     "title": record.get("title", "New chat"),
                     "reply": final_reply,
                     "disclaimer": config.DISCLAIMER,
                     "model": model_label,
+                    "models": [
+                        {"variant": request.model_variant, "model": model_label}
+                    ],
                     "generation_config": _generation_config_payload(),
                     "usage": last_usage,
                 }
             )
-        except ValueError as exc:
-            yield _sse_payload({"type": "error", "message": str(exc)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to stream response from vLLM.")
             yield _sse_payload(
@@ -165,8 +182,173 @@ async def chat_stream_endpoint(request: ChatRequest):
         finally:
             yield "data: [DONE]\n\n"
 
+    return event_stream()
+
+
+def _compare_stream_generator(request: ChatRequest, history_dicts):
+    def event_stream():
+        variant_pairs = []
+        try:
+            for variant in config.COMPARISON_VARIANTS:
+                model_label, generator = stream_reply_chunks(
+                    request.history, request.message, variant
+                )
+                variant_pairs.append((variant, model_label, generator))
+        except ValueError as exc:
+            yield _sse_payload({"type": "error", "message": str(exc)})
+            yield "data: [DONE]\n\n"
+            return
+
+        if not variant_pairs:
+            yield _sse_payload(
+                {"type": "error", "message": "비교할 모델이 설정되지 않았습니다."}
+            )
+            yield "data: [DONE]\n\n"
+            return
+
+        models_payload = [
+            {"variant": variant, "model": model_label}
+            for variant, model_label, _ in variant_pairs
+        ]
+
+        yield _sse_payload(
+            {
+                "type": "start",
+                "mode": "compare",
+                "models": models_payload,
+                "generation_config": _generation_config_payload(),
+            }
+        )
+
+        event_queue: Queue = Queue()
+        final_map: dict[str, dict] = {}
+
+        def _pump(variant, model_label, generator):
+            final_reply = ""
+            last_usage = None
+            try:
+                for chunk in generator:
+                    final_reply = chunk.text
+                    if chunk.usage is not None:
+                        last_usage = chunk.usage.model_dump()
+                    event_queue.put(
+                        (
+                            "delta",
+                            variant,
+                            model_label,
+                            {
+                                "text": chunk.text,
+                                "delta": chunk.delta,
+                                "finished": chunk.finished,
+                                "usage": last_usage,
+                            },
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Failed to stream response for variant %s", variant
+                )
+                event_queue.put(("error", variant, str(exc)))
+                return
+
+            event_queue.put(
+                ("done", variant, model_label, final_reply, last_usage)
+            )
+
+        threads = [
+            Thread(target=_pump, args=pair, daemon=True) for pair in variant_pairs
+        ]
+        for thread in threads:
+            thread.start()
+
+        completed = 0
+        total = len(variant_pairs)
+        encountered_error = False
+
+        while completed < total:
+            item = event_queue.get()
+            kind = item[0]
+            if kind == "delta":
+                _, variant, model_label, payload = item
+                yield _sse_payload(
+                    {
+                        "type": "delta",
+                        "mode": "compare",
+                        "variant": variant,
+                        "model": model_label,
+                        **payload,
+                    }
+                )
+            elif kind == "error":
+                _, variant, message = item
+                encountered_error = True
+                yield _sse_payload(
+                    {
+                        "type": "error",
+                        "variant": variant,
+                        "message": message,
+                    }
+                )
+                break
+            elif kind == "done":
+                _, variant, model_label, final_reply, last_usage = item
+                final_map[variant] = {
+                    "model": model_label,
+                    "reply": final_reply,
+                    "usage": last_usage,
+                }
+                completed += 1
+
+        for thread in threads:
+            thread.join(timeout=0.1)
+
+        if not encountered_error and final_map:
+            reply_sections = []
+            for variant in config.COMPARISON_VARIANTS:
+                data = final_map.get(variant)
+                if not data:
+                    continue
+                reply_sections.append(
+                    f"[{data['model']}]\n{data['reply']}".strip()
+                )
+            combined_reply = "\n\n".join(reply_sections).strip()
+
+            record = save_conversation(
+                request.conversation_id,
+                request.message,
+                combined_reply,
+                history_dicts,
+            )
+
+            yield _sse_payload(
+                {
+                    "type": "final",
+                    "mode": "compare",
+                    "conversation_id": record["id"],
+                    "title": record.get("title", "New chat"),
+                    "reply": combined_reply,
+                    "disclaimer": config.DISCLAIMER,
+                    "models": models_payload,
+                    "variants": final_map,
+                    "generation_config": _generation_config_payload(),
+                }
+            )
+
+        yield "data: [DONE]\n\n"
+
+    return event_stream()
+
+
+@app.post("/chat/stream")
+async def chat_stream_endpoint(request: ChatRequest):
+    history_dicts = [msg.dict() for msg in request.history]
+    if request.model_variant == "compare":
+        generator = _compare_stream_generator(request, history_dicts)
+    else:
+        generator = _single_stream_generator(request, history_dicts)
+
     return StreamingResponse(
-        iterate_in_threadpool(event_stream()),
+        iterate_in_threadpool(generator),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
