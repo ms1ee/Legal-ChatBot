@@ -1,22 +1,32 @@
 # LexAI Legal Chatbot
 
-## Setup
-1. Conda 환경
-   ```bash
-   cd /home/xailaw/chatbot
-   conda activate lexai
-   ```
-
-## Run Backend
-FastAPI 서버 실행
+## Setup (For Mac)
+1. Clone Repository
 ```bash
-cd /home/xailaw/chatbot
+git clone -b macOS https://github.com/ms1ee/Legal-ChatBot
+cd Legal-ChatBot
+```
+2. Install Dependency
+```bash
+conda create --name lexai python==3.10
+conda activate lexai
+pip install -r requirements.txt
+```
+3. Download Model
+```bash
+huggingface-cli download Qwen/Qwen3-1.7B \
+   --local-dir local_model/Qwen3-1.7B \
+   --local-dir-use-symlinks False
+```
+4. Merge Model
+```bash
+python3 backend/macOS/merge_lora.py
+```
+5. Run Backend
+```bash
 ./open_server.sh
 ```
-
-## Run Frontend
-Streamlit UI 실행
+6. Run Frontend
 ```bash
-cd /home/xailaw/chatbot
 ./run_app.sh
 ```

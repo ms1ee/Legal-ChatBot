@@ -211,12 +211,17 @@ class LocalVLLMEngine:
         )
 
 
+import threading
+from transformers import TextIteratorStreamer
+
+_GENERATE_LOCK = threading.Lock()
+
 class LocalHFEngine:
     def __init__(self):
         base_model = _maybe_resolve_local_path(config.LOCAL_BASE_MODEL)
         tokenizer_source = base_model
 
-        adapter_path = config.LOCAL_WEIGHTS_PATH
+        adapter_path = config.LOCAL_LORA_MODEL
         self.lora_path = None
 
         if adapter_path:
@@ -285,19 +290,18 @@ class LocalHFEngine:
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
 
-        # HF generate 호출
-        generated_ids = self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            do_sample=True if self.temperature > 0 else False,
-            temperature=float(self.temperature),
-            top_p=float(self.top_p),
-            max_new_tokens=int(self.max_new_tokens),
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
-        )
+        with _GENERATE_LOCK:
+            generated_ids = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                do_sample=True if self.temperature > 0 else False,
+                temperature=float(self.temperature),
+                top_p=float(self.top_p),
+                max_new_tokens=int(self.max_new_tokens),
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
 
-        # 전체 토큰에서 프롬프트 부분 잘라내기
         generated_only_ids = generated_ids[:, input_ids.shape[1]:]
 
         full_text = self.tokenizer.decode(
@@ -316,18 +320,85 @@ class LocalHFEngine:
         )
         return text, usage
 
+    @torch.no_grad()
+    def stream_generate(self, history, user_message) -> Iterator[StreamChunk]:
+        prompt = self._prepare_prompt(history, user_message)
+
+        encoded = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            add_special_tokens=False,
+        ).to(self.device)
+
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask")
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
+
+        generation_kwargs = dict(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            streamer=streamer,
+            do_sample=True if self.temperature > 0 else False,
+            temperature=float(self.temperature),
+            top_p=float(self.top_p),
+            max_new_tokens=int(self.max_new_tokens),
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+
+        def thread_target():
+            with _GENERATE_LOCK:
+                self.model.generate(**generation_kwargs)
+
+        thread = threading.Thread(target=thread_target)
+        thread.start()
+
+        full_text = ""
+        for new_text in streamer:
+            full_text += new_text
+            clean_text = _strip_think_tag(full_text)
+            yield StreamChunk(
+                delta=new_text,
+                text=clean_text,
+                finished=False,
+                usage=None,
+            )
+        
+        thread.join()
+        
+        prompt_tokens = int(input_ids.shape[1])
+        completion_tokens = len(self.tokenizer.encode(full_text))
+
+        usage = UsageReport(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+
+        yield StreamChunk(
+            delta="",
+            text=_strip_think_tag(full_text),
+            finished=True,
+            usage=usage,
+        )
+    
     async def generate(self, history, user_message):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._generate_sync, history, user_message
         )
 
+
 class LocalMLXEngine:
     def __init__(self):
-        from mlx_lm import load as mlx_load, generate as mlx_generate
+        from mlx_lm import load as mlx_load, generate as mlx_generate, stream_generate as mlx_stream_generate
         from mlx_lm.sample_utils import make_sampler
         self._mlx_generate = mlx_generate
-        model_id = _maybe_resolve_local_path(config.LOCAL_MODEL_OUT)
+        self._mlx_stream_generate = mlx_stream_generate
+        model_id = _maybe_resolve_local_path(config.LOCAL_MERGED_MODEL)
         logger.info("Loading MLX model from %s", model_id)
         self.model, self.tokenizer = mlx_load(model_id)
         if getattr(self.tokenizer, "pad_token", None) is None:
@@ -356,13 +427,14 @@ class LocalMLXEngine:
     def _generate_sync(self, history, user_message):
         prompt = self._prepare_prompt(history, user_message)
 
-        result = self._mlx_generate(
-            self.model,
-            self.tokenizer,
-            prompt,
-            max_tokens=int(self.max_new_tokens),
-            sampler=self.sampler,
-        )
+        with _GENERATE_LOCK:
+            result = self._mlx_generate(
+                self.model,
+                self.tokenizer,
+                prompt,
+                max_tokens=int(self.max_new_tokens),
+                sampler=self.sampler,
+            )
 
         if isinstance(result, dict):
             text = result.get("text", "")
@@ -381,28 +453,82 @@ class LocalMLXEngine:
         )
         return text, usage
 
+    def stream_generate(self, history, user_message) -> Iterator[StreamChunk]:
+        prompt = self._prepare_prompt(history, user_message)
+        prompt_tokens = self._count_tokens(prompt)
+        full_text = ""
+        with _GENERATE_LOCK:
+            generation_stream = self._mlx_stream_generate(
+                self.model,
+                self.tokenizer,
+                prompt,
+                max_tokens=int(self.max_new_tokens),
+                sampler=self.sampler,
+            )
+            
+            for response in generation_stream:
+                if hasattr(response, "text"):
+                    delta = response.text
+                else:
+                    delta = str(response) # Fallback
+                
+                full_text += delta
+                clean_text = _strip_think_tag(full_text)
+                
+                yield StreamChunk(
+                    delta=delta,
+                    text=clean_text,
+                    finished=False,
+                    usage=None,
+                )
+
+        completion_tokens = self._count_tokens(full_text)
+        usage = UsageReport(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+        
+        yield StreamChunk(
+            delta="",
+            text=_strip_think_tag(full_text),
+            finished=True,
+            usage=usage,
+        )
+
     async def generate(self, history, user_message):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._generate_sync, history, user_message
         )
 
-    
-## 서버 키자마자 vLLM Engine 초기화 & 모델 로드 바로 해
-## vLLM 엔진 초기화 한번만 할 수 있도록 체크하는 역할도 함
-def _ensure_local_engine():
-    global _LOCAL_ENGINE
-    if _LOCAL_ENGINE is None:
-        logger.info("Bootstrapping local vLLM engine with model %s", config.LOCAL_BASE_MODEL)
-        if config.RUNTIME_BACKEND == "vllm":
-            _LOCAL_ENGINE = LocalVLLMEngine()
-        elif config.RUNTIME_BACKEND == "hf-mps":
-            _LOCAL_ENGINE = LocalHFEngine()
-        elif config.RUNTIME_BACKEND == "mlx":
-            _LOCAL_ENGINE = LocalMLXEngine()
+
+_ENGINES: dict[str, LocalVLLMEngine | LocalHFEngine | LocalMLXEngine] = {}
+
+
+def _get_variant_profile(variant: str) -> dict:
+    try:
+        return config.MODEL_VARIANTS[variant]
+    except KeyError as exc:
+        raise ValueError(f"Unknown model variant '{variant}'") from exc
+
+
+def _ensure_local_engine(variant: str):
+    engine = _ENGINES.get(variant)
+    if engine is None:
+        profile = _get_variant_profile(variant)
+        framework = profile.get("framework")
+
+        if framework == "hf-mps":
+            logger.info("Bootstrapping HF engine for variant '%s'", variant)
+            engine = LocalHFEngine()
+        elif framework == "mlx":
+            logger.info("Bootstrapping MLX engine for variant '%s'", variant)
+            engine = LocalMLXEngine()
         else:
-            raise RuntimeError(f"Unsupported RUNTIME_BACKEND: {config.RUNTIME_BACKEND}")
-    return _LOCAL_ENGINE
+            raise ValueError(f"Unknown framework '{framework}' for variant '{variant}'")
+        _ENGINES[variant] = engine
+    return engine
 
 
 def warm_up_local_engine():
@@ -419,11 +545,13 @@ async def generate_reply(history, user_message, model_variant):
     """Generate a reply via the locally hosted vLLM."""
 
     engine = _ensure_local_engine(model_variant)
-    return await engine.generate(history, user_message), engine.display_name
+    display_name = getattr(engine, "display_name", model_variant)
+    return await engine.generate(history, user_message), display_name
 
 
 def stream_reply_chunks(history, user_message, model_variant):
     """Return display name and streaming iterator."""
 
     engine = _ensure_local_engine(model_variant)
-    return engine.display_name, engine.stream_generate(history, user_message)
+    display_name = getattr(engine, "display_name", model_variant)
+    return display_name, engine.stream_generate(history, user_message)

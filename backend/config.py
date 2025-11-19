@@ -6,35 +6,24 @@ TEMPERATURE = 0
 TOP_P = 0.1
 
 LOCAL_BASE_MODEL = Path("local_model/Qwen3-1.7B")
-LOCAL_WEIGHTS_PATH = Path("local_model/LoRA")
-LOCAL_MODEL_OUT = Path("local_model/merged")
-BASELINE_MODEL = "Qwen/Qwen3-1.7B"
-FINETUNED_MODEL = "Qwen/Qwen3-1.7B"
-FINETUNED_WEIGHTS_PATH = Path("local_model/")
+LOCAL_LORA_MODEL = Path("local_model/LoRA")
+LOCAL_MERGED_MODEL = Path("local_model/merged")
 DEFAULT_MODEL_VARIANT = "finetuned"
 COMPARISON_VARIANTS = ("finetuned", "baseline")
 
 MODEL_VARIANTS = {
     "baseline": {
         "display_name": "Qwen3-1.7B (Baseline)",
-        "base_model": BASELINE_MODEL,
-        "weights_path": None,
-        "device_ids": "0,1",
-        "tensor_parallel_size": 2,
-        "gpu_memory_utilization": 0.85,
+        "base_model": LOCAL_BASE_MODEL,
+        "framework": "mlx",
     },
     "finetuned": {
         "display_name": MODEL_DISPLAY_NAME,
-        "base_model": FINETUNED_MODEL,
-        "weights_path": FINETUNED_WEIGHTS_PATH,
-        "device_ids": "2,3",
-        "tensor_parallel_size": 2,
-        "gpu_memory_utilization": 0.85,
+        "base_model": LOCAL_MERGED_MODEL,
+        "framework": "mlx",
     },
 }
 
-LOCAL_BASE_MODEL = FINETUNED_MODEL
-LOCAL_WEIGHTS_PATH = FINETUNED_WEIGHTS_PATH
 TENSOR_PARALLEL_SIZE = 2
 GPU_MEMORY_UTILIZATION = 0.85
 RUNTIME_BACKEND="mlx" # or "vllm" or "mlx" or "hf-mps"
