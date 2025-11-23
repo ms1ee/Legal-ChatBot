@@ -2,12 +2,12 @@ from pathlib import Path
 
 MODEL_DISPLAY_NAME = "LexAI-Qwen3 1.7B"
 MAX_NEW_TOKENS = 8192
-TEMPERATURE = 0
-TOP_P = 0.1
+TEMPERATURE = 0.7
+TOP_P = 0.95
 
 LOCAL_BASE_MODEL = Path("local_model/Qwen3-1.7B")
 LOCAL_LORA_MODEL = Path("local_model/LoRA")
-LOCAL_MERGED_MODEL = Path("local_model/merged")
+LOCAL_MERGED_MODEL = Path("local_model/rlvr+sft")
 DEFAULT_MODEL_VARIANT = "finetuned"
 COMPARISON_VARIANTS = ("finetuned", "baseline")
 

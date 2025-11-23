@@ -14,19 +14,21 @@ pip install -r requirements.txt
 ```
 3. Download Model
 ```bash
+# Download basline model
 huggingface-cli download Qwen/Qwen3-1.7B \
    --local-dir local_model/Qwen3-1.7B \
    --local-dir-use-symlinks False
+
+# Download fine-tuned model (ours)
+huggingface-cli download ms1ee/sft-grpo-onlyLegalKo \
+   --local-dir local_model/rlvr+sft \
+   --local-dir-use-symlinks False
 ```
-4. Merge Model
-```bash
-python3 backend/macOS/merge_lora.py
-```
-5. Run Backend
+4. Run Backend
 ```bash
 ./open_server.sh
 ```
-6. Run Frontend
+5. Run Frontend
 ```bash
 ./run_app.sh
 ```
