@@ -20,15 +20,7 @@ huggingface-cli download Qwen/Qwen3-1.7B \
    --local-dir-use-symlinks False
 
 # Download fine-tuned model (ours)
-huggingface-cli download ms1ee/sft-grpo-onlyLegalKo \
-  --include "checkpoint-3500/*" \
-  --exclude "*/optimizer.pt" \
-  --exclude "*/scheduler.pt" \
-  --exclude "*/rng_state_*.pth" \
-  --exclude "*/trainer_state.json" \
-  --exclude "*/training_args.bin" \
-  --local-dir local_model/sft_rlvr \
-  --local-dir-use-symlinks False
+python3 local_model/download.py
 ```
 4. Run Backend
 ```bash
