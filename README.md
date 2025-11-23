@@ -21,8 +21,9 @@ huggingface-cli download Qwen/Qwen3-1.7B \
 
 # Download fine-tuned model (ours)
 huggingface-cli download ms1ee/sft-grpo-onlyLegalKo \
-   --local-dir local_model/rlvr+sft \
-   --local-dir-use-symlinks False
+  --include "checkpoint-3500/*" \
+  --local-dir local_model/sft_rlvr \
+  --local-dir-use-symlinks False
 ```
 4. Run Backend
 ```bash

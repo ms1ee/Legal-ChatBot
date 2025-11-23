@@ -7,7 +7,7 @@ TOP_P = 0.95
 
 LOCAL_BASE_MODEL = Path("local_model/Qwen3-1.7B")
 LOCAL_LORA_MODEL = Path("local_model/LoRA")
-LOCAL_MERGED_MODEL = Path("local_model/rlvr+sft")
+LOCAL_MERGED_MODEL = Path("local_model/sft_rlvr/checkpoint-3500")
 DEFAULT_MODEL_VARIANT = "finetuned"
 COMPARISON_VARIANTS = ("finetuned", "baseline")
 
