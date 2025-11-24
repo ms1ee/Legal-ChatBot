@@ -1,7 +1,7 @@
 from pathlib import Path
 
 MODEL_DISPLAY_NAME = "LexAI-Qwen3 1.7B"
-MAX_NEW_TOKENS = 8192
+MAX_NEW_TOKENS = 4096
 TEMPERATURE = 0.7
 TOP_P = 0.95
 
@@ -15,12 +15,14 @@ MODEL_VARIANTS = {
     "baseline": {
         "display_name": "Qwen3-1.7B (Baseline)",
         "base_model": LOCAL_BASE_MODEL,
-        "framework": "mlx",
+        "framework": "ollama",
+        "ollama_model_name": "baseline"
     },
     "finetuned": {
         "display_name": MODEL_DISPLAY_NAME,
         "base_model": LOCAL_MERGED_MODEL,
-        "framework": "mlx",
+        "framework": "ollama",
+        "ollama_model_name": "sft_rlvr"
     },
 }
 

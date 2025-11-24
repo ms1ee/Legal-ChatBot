@@ -9,3 +9,4 @@ vllm>=0.4.0
 mlx-lm
 peft==0.18.0
 accelerate==1.11.0
+ollama

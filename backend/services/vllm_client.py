@@ -507,8 +507,86 @@ class LocalMLXEngine:
             None, self._generate_sync, history, user_message
         )
 
+import ollama
+class LocalOllamaEngine:
+    def __init__(self, variant_name: str, profile: dict):
+        self.variant = variant_name
+        self.display_name = profile.get("display_name", variant_name)
+        self.model_id = profile.get("ollama_model_name")
 
-_ENGINES: dict[str, LocalVLLMEngine | LocalHFEngine | LocalMLXEngine] = {}
+    def _prepare_messages(self, history, user_message):
+        messages = [msg.dict() for msg in history]
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    def _generate_sync(self, history, user_message):
+        messages = self._prepare_messages(history, user_message)
+        response = ollama.chat(
+            model=self.model_id,
+            messages=messages,
+            stream=False,
+        )
+        text = response.get("message", {}).get("content", "")
+        text = _strip_think_tag(text.strip())
+
+        prompt_tokens = response.get("prompt_eval_count", 0)
+        completion_tokens = response.get("eval_count", 0)
+
+        usage = UsageReport(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+        return text, usage
+
+    def stream_generate(self, history, user_message) -> Iterator[StreamChunk]:
+        messages = self._prepare_messages(history, user_message)
+        full_text = ""
+        
+        final_prompt_tokens = 0
+        final_eval_tokens = 0
+        
+        stream = ollama.chat(
+            model=self.model_id,
+            messages=messages,
+            stream=True,
+        )
+        
+        for chunk in stream:
+            delta = chunk.get("message", {}).get("content", "")
+            full_text += delta
+            clean_text = _strip_think_tag(full_text)
+            
+            yield StreamChunk(
+                delta=delta,
+                text=clean_text,
+                finished=False,
+                usage=None,
+            )
+            
+            if chunk.get("done", False):
+                final_prompt_tokens = chunk.get("prompt_eval_count", 0)
+                final_eval_tokens = chunk.get("eval_count", 0)
+
+        usage = UsageReport(
+            prompt_tokens=final_prompt_tokens,
+            completion_tokens=final_eval_tokens,
+            total_tokens=final_prompt_tokens + final_eval_tokens,
+        )
+        
+        yield StreamChunk(
+            delta="",
+            text=_strip_think_tag(full_text),
+            finished=True,
+            usage=usage,
+        )
+
+    async def generate(self, history, user_message):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._generate_sync, history, user_message
+        )
+_ENGINES: dict[str, LocalVLLMEngine | LocalHFEngine | LocalMLXEngine | LocalOllamaEngine] = {}
 
 
 def _get_variant_profile(variant: str) -> dict:
@@ -530,6 +608,9 @@ def _ensure_local_engine(variant: str):
         elif framework == "mlx":
             logger.info("Bootstrapping MLX engine for variant '%s'", variant)
             engine = LocalMLXEngine(variant, profile)
+        elif framework == "ollama":
+            logger.info("Bootstrapping Ollama engine for variant '%s'", variant)
+            engine = LocalOllamaEngine(variant, profile)
         else:
             raise ValueError(f"Unknown framework '{framework}' for variant '{variant}'")
         _ENGINES[variant] = engine

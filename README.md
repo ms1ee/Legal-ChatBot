@@ -22,11 +22,21 @@ huggingface-cli download Qwen/Qwen3-1.7B \
 # Download fine-tuned model (ours)
 python3 local_model/download.py
 ```
-4. Run Backend
+4. Setup Ollama
+- Plz install ollama first
+```bash
+# conver to gguf
+python3 backend/macOS/convert_gguf.py
+
+# register models
+ollama create baseline -f backend/macOS/Modelfile_b   
+ollama create sft_rlvr -f backend/macOS/Modelfile_s
+```
+5. Run Backend
 ```bash
 ./open_server.sh
 ```
-5. Run Frontend
+6. Run Frontend
 ```bash
 ./run_app.sh
 ```
