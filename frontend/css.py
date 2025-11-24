@@ -121,13 +121,16 @@ header[data-testid="stHeader"] {
 }
 .lexi-columns-marker + div[data-testid="stColumns"] > div[data-testid="column"]:first-of-type > div[data-testid="stVerticalBlock"]:first-of-type {
     background: var(--panel-bg);
-    border: 1px solid var(--panel-border);
-    border-radius: 18px;
-    padding: 1.1rem 1.25rem;
+    border-right: 3px solid var(--panel-border); /* 경계선 강조 */
+    border-top: 1px solid var(--panel-border);
+    border-bottom: 1px solid var(--panel-border);
+    border-left: 1px solid var(--panel-border);
+    border-radius: 18px 0 0 18px;
+    padding: 2rem 1.7rem 2rem 2.2rem; /* 좌측 패널 여백 넉넉하게 */
     box-shadow: var(--panel-shadow);
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
+    gap: 1.25rem; /* 내부 간격 증가 */
     height: calc(100vh - 60px);
     max-height: calc(100vh - 60px);
     overflow: hidden;
@@ -135,8 +138,9 @@ header[data-testid="stHeader"] {
 .lexi-columns-marker + div[data-testid="stColumns"] > div[data-testid="column"]:nth-of-type(2) > div[data-testid="stVerticalBlock"]:first-of-type {
     background: var(--workspace-bg);
     border: 1px solid var(--workspace-border);
-    border-radius: 28px;
-    padding: 1.5rem 2rem 6.5rem;
+    border-left: 0px;
+    border-radius: 0 28px 28px 0;
+    padding: 2.2rem 2.4rem 6.5rem 2rem; /* 오른쪽 패널 여백 증가 */
     box-shadow: var(--workspace-shadow);
     min-height: 0;
     position: relative;
@@ -185,11 +189,13 @@ header[data-testid="stHeader"] {
     margin-bottom: 0.2rem;
 }
 .session-card {
-    background: rgba(255, 255, 255, 0.04);
+    margin-bottom: 1.1rem; /* 세션카드 간격 */
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 14px;
-    border: 1px solid var(--panel-border);
-    padding: 0.9rem;
+    border: 1.5px solid var(--panel-border);
+    padding: 1.3rem 1.15rem;
     color: var(--text-primary);
+    box-shadow: 0 5px 12px rgba(64,110,219,0.08);
 }
 .session-card small {
     text-transform: uppercase;
@@ -320,6 +326,18 @@ header[data-testid="stHeader"] {
 .chat-row[data-role="user"] {
     justify-content: flex-end;
 }
+.bubble-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-width: 92%;
+}
+.chat-row[data-role="user"] .bubble-stack {
+    align-items: flex-end;
+}
+.chat-row[data-role="assistant"] .bubble-stack {
+    align-items: flex-start;
+}
 .chat-bubble {
     border-radius: 22px;
     padding: 0.55rem 0.95rem;
@@ -408,6 +426,87 @@ header[data-testid="stHeader"] {
 .compare-group .chat-bubble {
     width: 100%;
     max-width: none;
+}
+.compare-item .bubble-stack {
+    width: 100%;
+    max-width: none;
+}
+.think-toggle {
+    width: 100%;
+    border-radius: 16px;
+    border: 1px dashed rgba(47, 123, 255, 0.35);
+    background: rgba(47, 123, 255, 0.08);
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    box-shadow: inset 0 0 12px rgba(47, 123, 255, 0.08);
+}
+.think-toggle.thinking {
+    border-style: solid;
+    animation: thinkPulse 1.4s ease-in-out infinite;
+}
+.think-toggle.thinking summary {
+    color: var(--text-primary);
+}
+.think-toggle summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent);
+    list-style: none;
+}
+.think-toggle summary::-webkit-details-marker {
+    display: none;
+}
+.think-toggle summary::after {
+    content: "⌄";
+    font-size: 0.7rem;
+    margin-left: 0.4rem;
+    display: inline-block;
+    transition: transform 0.2s ease;
+}
+.think-toggle[open] summary::after {
+    transform: rotate(180deg);
+}
+.think-toggle.thinking summary::after {
+    animation: bounceArrow 1.2s ease-in-out infinite;
+}
+.think-body {
+    margin-top: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.32;
+    white-space: pre-wrap;
+}
+.think-debug {
+    font-size: 0.76rem;
+    color: rgba(15, 23, 42, 0.55);
+    margin-bottom: 0.35rem;
+}
+@keyframes thinkPulse {
+    0% { box-shadow: 0 0 0 rgba(47, 123, 255, 0.18); }
+    50% { box-shadow: 0 0 14px rgba(47, 123, 255, 0.35); }
+    100% { box-shadow: 0 0 0 rgba(47, 123, 255, 0.18); }
+}
+@keyframes bounceArrow {
+    0% { transform: translateY(0) rotate(180deg); }
+    50% { transform: translateY(2px) rotate(180deg); }
+    100% { transform: translateY(0) rotate(180deg); }
+}
+.bubble-notice {
+    font-size: 0.8rem;
+    color: #b45309;
+    background: rgba(255, 186, 122, 0.18);
+    border: 1px solid rgba(255, 186, 122, 0.5);
+    border-radius: 14px;
+    padding: 0.45rem 0.7rem;
+    line-height: 1.3;
+    max-width: 480px;
+}
+.chat-row[data-role="user"] .bubble-notice {
+    align-self: flex-end;
+}
+.chat-row[data-role="assistant"] .bubble-notice {
+    align-self: flex-start;
 }
 .hero-state {
     margin-top: 10%;
@@ -515,6 +614,12 @@ body[data-hero-mode="true"] div[data-testid="stChatInput"] button {
 .scrollable::-webkit-scrollbar-thumb {
     background: rgba(120, 144, 180, 0.5);
     border-radius: 4px;
+}
+.sidebar-title, .session-headline, .sidebar-subtitle {
+    margin-bottom: 0.6rem;
+}
+.compare-model-list, .session-metrics, .session-usage {
+    margin-bottom: 0.5rem;
 }
 </style>
 """)

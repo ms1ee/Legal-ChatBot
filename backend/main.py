@@ -129,6 +129,7 @@ def _single_stream_generator(request: ChatRequest, history_dicts):
 
         final_reply = ""
         last_usage = None
+        last_finish_reason = None
 
         yield _sse_payload(
             {
@@ -147,19 +148,25 @@ def _single_stream_generator(request: ChatRequest, history_dicts):
                 final_reply = chunk.text
                 if chunk.usage is not None:
                     last_usage = chunk.usage.model_dump()
+                if chunk.finish_reason:
+                    last_finish_reason = chunk.finish_reason
 
-                yield _sse_payload(
-                    {
-                        "type": "delta",
-                        "mode": "single",
-                        "variant": request.model_variant,
-                        "model": model_label,
-                        "text": chunk.text,
-                        "delta": chunk.delta,
-                        "finished": chunk.finished,
-                        "usage": last_usage,
-                    }
-                )
+                payload = {
+                    "type": "delta",
+                    "mode": "single",
+                    "variant": request.model_variant,
+                    "model": model_label,
+                    "text": chunk.text,
+                    "delta": chunk.delta,
+                    "finished": chunk.finished,
+                    "usage": last_usage,
+                    "thinking": chunk.thinking,
+                }
+                if chunk.think_text:
+                    payload["think_text"] = chunk.think_text
+                if chunk.finish_reason:
+                    payload["finish_reason"] = chunk.finish_reason
+                yield _sse_payload(payload)
 
             record = save_conversation(
                 request.conversation_id,
@@ -182,6 +189,7 @@ def _single_stream_generator(request: ChatRequest, history_dicts):
                     ],
                     "generation_config": _generation_config_payload(),
                     "usage": last_usage,
+                    "finish_reason": last_finish_reason,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -239,11 +247,14 @@ def _compare_stream_generator(request: ChatRequest, history_dicts):
         def _pump(variant, model_label, generator):
             final_reply = ""
             last_usage = None
+            last_finish_reason = None
             try:
                 for chunk in generator:
                     final_reply = chunk.text
                     if chunk.usage is not None:
                         last_usage = chunk.usage.model_dump()
+                    if chunk.finish_reason:
+                        last_finish_reason = chunk.finish_reason
                     event_queue.put(
                         (
                             "delta",
@@ -254,6 +265,9 @@ def _compare_stream_generator(request: ChatRequest, history_dicts):
                                 "delta": chunk.delta,
                                 "finished": chunk.finished,
                                 "usage": last_usage,
+                                "thinking": chunk.thinking,
+                                "finish_reason": chunk.finish_reason,
+                                "think_text": chunk.think_text,
                             },
                         )
                     )
@@ -265,7 +279,7 @@ def _compare_stream_generator(request: ChatRequest, history_dicts):
                 return
 
             event_queue.put(
-                ("done", variant, model_label, final_reply, last_usage)
+                ("done", variant, model_label, final_reply, last_usage, last_finish_reason)
             )
 
         threads = [
@@ -304,11 +318,12 @@ def _compare_stream_generator(request: ChatRequest, history_dicts):
                 )
                 break
             elif kind == "done":
-                _, variant, model_label, final_reply, last_usage = item
+                _, variant, model_label, final_reply, last_usage, finish_reason = item
                 final_map[variant] = {
                     "model": model_label,
                     "reply": final_reply,
                     "usage": last_usage,
+                    "finish_reason": finish_reason,
                 }
                 completed += 1
 
