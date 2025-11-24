@@ -23,8 +23,19 @@ from .storage import (
     update_conversation_title,
 )
 
+import numpy as np
+import torch
+import random
+
 logger = logging.getLogger(__name__)
 
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    logger.info(f"Global seed set to: {seed}")
 
 def _generation_config_payload():
     return {
@@ -54,7 +65,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Warm up local vLLM before serving requests."""
-
+    if hasattr(config, "SEED"):
+        set_seed(config.SEED)
+    
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, warm_up_local_engine)
 

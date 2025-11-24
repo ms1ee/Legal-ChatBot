@@ -111,6 +111,7 @@ class LocalVLLMEngine:
             temperature=config.TEMPERATURE,
             top_p=config.TOP_P,
             max_tokens=config.MAX_NEW_TOKENS,
+            seed=config.SEED
         )
 
     def _prepare_prompt(self, history, user_message):
