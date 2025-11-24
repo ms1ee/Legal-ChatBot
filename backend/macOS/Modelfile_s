@@ -1,6 +1,7 @@
 FROM /Users/kimminjun/Desktop/4-2/CD2/LexAI/local_model/gguf/sft_rlvr.fp16.gguf
-PARAMETER temperature 0.7
-PARAMETER top_p 0.95
+PARAMETER temperature 0.3
+PARAMETER top_p 0.4
+PARAMETER seed 42
 PARAMETER repeat_penalty 1.1
 PARAMETER stop <|eot_id|>
 PARAMETER num_ctx 8192
