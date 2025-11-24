@@ -6,3 +6,4 @@ local_model/merged/
 local_model/sft_rlvr/
 .vscode/
 .streamlit/
+local_model/gguf
