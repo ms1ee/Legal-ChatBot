@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+from html import escape as html_escape
 from pathlib import Path
 
 import requests
@@ -21,6 +22,7 @@ MODEL_VARIANT_OPTIONS = {
 }
 COMPARISON_VARIANTS = ["finetuned", "baseline"]
 DEFAULT_MODEL_VARIANT = "finetuned"
+MAX_TOKEN_FINISH_REASONS = {"length", "max_tokens", "token_limit"}
 
 if LOGO_PATH.exists():
     logo_bytes = LOGO_PATH.read_bytes()
@@ -155,7 +157,7 @@ def render_theme_controls():
     return st.session_state.ui_theme
 
 
-def _bubble_html(message, bubble_class, extra_class=""):
+def _bubble_html(message, bubble_class, extra_class="", body_override=None):
     variant = message.get("variant")
     variant_label = message.get("variant_label")
     variant_attr = f' data-variant="{variant}"' if variant else ""
@@ -164,27 +166,83 @@ def _bubble_html(message, bubble_class, extra_class=""):
         if variant_label
         else ""
     )
+    if body_override is None:
+        body_content = f'<span class="message-text">{message["content"]}</span>'
+    else:
+        body_content = body_override
     return (
         f'<div class="chat-bubble {bubble_class}{extra_class}"{variant_attr}>'
         f"{label_html}"
-        f'<span class="message-text">{message["content"]}</span>'
+        f"{body_content}"
         "</div>"
     )
+
+
+def _think_toggle_html(think_text: str, thinking: bool):
+    if not think_text:
+        return ""
+    summary = "추론 과정 (진행 중)" if thinking else "추론 과정"
+    state_class = " thinking" if thinking else ""
+    safe_text = html_escape(think_text).replace("\n", "<br/>")
+    return (
+        f'<details class="think-toggle{state_class}">'
+        f"<summary>{summary}</summary>"
+        f'<div class="think-body">{safe_text}</div>'
+        "</details>"
+    )
+
+
+def _finish_notice_html(reason: str | None):
+    if not reason:
+        return ""
+    normalized = str(reason).lower()
+    if "." in normalized:
+        normalized = normalized.split(".")[-1]
+    if normalized in MAX_TOKEN_FINISH_REASONS:
+        return (
+            '<div class="bubble-notice">'
+            "⚠️ 토큰 제한으로 인해 답변이 중간에 종료되었어요. "
+            "질문을 조금 더 간결하게 다시 보내 보세요."
+            "</div>"
+        )
+    return ""
+
+
+def _bubble_stack_html(message, bubble_class, extra_class=""):
+    is_assistant = message["role"] == "assistant"
+    think_html = ""
+    notice_html = ""
+    if is_assistant:
+        think_text = message.get("think_text")
+        if think_text:
+            think_html = _think_toggle_html(
+                think_text, message.get("thinking", False)
+            )
+        notice_html = _finish_notice_html(message.get("finish_reason"))
+    content_text = (message.get("content") or "").strip()
+    show_think_only = bool(is_assistant and think_html and not content_text)
+    bubble_html = _bubble_html(
+        message,
+        bubble_class,
+        extra_class,
+        body_override=think_html if show_think_only else None,
+    )
+    if show_think_only:
+        think_html = ""
+    return f'<div class="bubble-stack">{think_html}{bubble_html}{notice_html}</div>'
 
 
 def render_message(message):
     is_assistant = message["role"] == "assistant"
     bubble_class = "chat-assistant" if is_assistant else "chat-user"
     alignment = "flex-start" if is_assistant else "flex-end"
-    is_pending = (
-        is_assistant and (message["content"] or "").strip() == "Lexi가 응답 중입니다…"
-    )
+    is_pending = is_assistant and message.get("pending", False)
     extra_class = " ping-bubble" if is_pending else ""
-    bubble_html = _bubble_html(message, bubble_class, extra_class)
+    stacked = _bubble_stack_html(message, bubble_class, extra_class)
     st.markdown(
         f"""
         <div class="chat-row" data-role="{message['role']}" style="display:flex; justify-content:{alignment};">
-            {bubble_html}
+            {stacked}
         </div>
         """,
         unsafe_allow_html=True,
@@ -200,9 +258,9 @@ def render_compare_group(messages):
     )
     html_parts = ['<div class="compare-group">']
     for message in ordered:
-        html_parts.append(
-            f'<div class="compare-item">{_bubble_html(message, "chat-assistant")}</div>'
-        )
+        extra_class = " ping-bubble" if message.get("pending") else ""
+        bubble_stack = _bubble_stack_html(message, "chat-assistant", extra_class)
+        html_parts.append(f'<div class="compare-item">{bubble_stack}</div>')
     html_parts.append("</div>")
     st.markdown("".join(html_parts), unsafe_allow_html=True)
 
@@ -414,10 +472,14 @@ def handle_user_prompt(prompt, conversation_placeholder):
         label = MODEL_VARIANT_OPTIONS.get(variant, variant)
         placeholder = {
             "role": "assistant",
-            "content": "Lexi가 응답 중입니다…",
+            "content": "",
             "variant": variant if variant != "compare" else None,
             "variant_label": label,
             "turn_id": turn_id,
+            "pending": True,
+            "thinking": True,
+            "think_text": None,
+            "finish_reason": None,
         }
         st.session_state.messages.append(placeholder)
         assistant_placeholders[variant] = placeholder
@@ -468,8 +530,22 @@ def handle_user_prompt(prompt, conversation_placeholder):
                 target = assistant_placeholders.get(variant, primary_assistant)
                 if target is not None and text is not None:
                     target["content"] = text or target["content"]
+                    if text and text.strip():
+                        target["pending"] = False
                     if stream_notice_active.get(variant):
                         stream_notice_active[variant] = False
+                    thinking_flag = event.get("thinking")
+                    think_text = event.get("think_text")
+                    if think_text:
+                        target["think_text"] = think_text
+                    if thinking_flag is not None:
+                        target["thinking"] = bool(thinking_flag)
+                    if text and text.strip() and target.get("think_text"):
+                        target.pop("think_text", None)
+                        target["thinking"] = False
+                    finish_reason = event.get("finish_reason")
+                    if finish_reason:
+                        target["finish_reason"] = finish_reason
                     render_conversation(conversation_placeholder)
             elif event_type == "final":
                 variant = event.get("variant", selected_variant)
@@ -486,11 +562,24 @@ def handle_user_prompt(prompt, conversation_placeholder):
                         )
                         if target is not None and payload.get("reply"):
                             target["content"] = payload["reply"]
+                        if target is not None:
+                            finish_reason = payload.get("finish_reason")
+                            if finish_reason is not None:
+                                target["finish_reason"] = finish_reason
+                            target["pending"] = False
+                            target.pop("think_text", None)
+                            target["thinking"] = False
                     st.session_state.session_meta["compare_usage"] = variant_payloads
                 else:
                     target = assistant_placeholders.get(variant, primary_assistant)
                     if target is not None:
                         target["content"] = event.get("reply", target["content"])
+                        finish_reason = event.get("finish_reason")
+                        if finish_reason is not None:
+                            target["finish_reason"] = finish_reason
+                        target["pending"] = False
+                        target.pop("think_text", None)
+                        target["thinking"] = False
                     st.session_state.session_meta["usage"] = (
                         event.get("usage", {}) or {}
                     )

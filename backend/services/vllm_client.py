@@ -31,25 +31,37 @@ class StreamChunk:
     text: str
     finished: bool
     usage: UsageReport | None = None
+    think_text: str | None = None
+    thinking: bool = False
+    finish_reason: str | None = None
+
+
+def _split_think_and_answer(text: str) -> tuple[str, str, bool]:
+    """Return (think_text, answer_text, thinking_active)."""
+
+    lowered = text.lower()
+    start = lowered.find(THINK_OPEN)
+    if start == -1:
+        return "", text.strip(), False
+
+    start_idx = start + len(THINK_OPEN)
+    end = lowered.find(THINK_CLOSE, start_idx)
+
+    prefixed = text[:start]
+    if end == -1:
+        think_section = text[start_idx:]
+        answer_text = prefixed.strip()
+        return think_section.strip(), answer_text, True
+
+    think_section = text[start_idx:end]
+    suffix = text[end + len(THINK_CLOSE) :]
+    answer_text = (prefixed + suffix).strip()
+    return think_section.strip(), answer_text, False
 
 
 def _strip_think_tag(text):
-    lowered = text.lower()
-    result = []
-    idx = 0
-    while idx < len(text):
-        start = lowered.find(THINK_OPEN, idx)
-        if start == -1:
-            result.append(text[idx:])
-            break
-        result.append(text[idx:start])
-        end = lowered.find(THINK_CLOSE, start)
-        if end == -1:
-            # Drop everything after an opening tag with no closing tag yet.
-            break
-        idx = end + len(THINK_CLOSE)
-    cleaned = "".join(result)
-    return cleaned.strip()
+    _, answer_text, _ = _split_think_and_answer(text)
+    return answer_text
 
 
 def _maybe_resolve_local_path(path_like):
@@ -179,7 +191,9 @@ class LocalVLLMEngine:
                     continue
 
                 raw_text = output.outputs[0].text or ""
-                clean_text = _strip_think_tag(raw_text)
+                think_text, clean_text, think_active = _split_think_and_answer(
+                    raw_text
+                )
                 if clean_text.startswith(last_clean_text):
                     delta = clean_text[len(last_clean_text) :]
                 else:
@@ -187,10 +201,18 @@ class LocalVLLMEngine:
                 last_clean_text = clean_text
 
                 usage = None
+                finish_reason = None
                 finished = output.finished and output.outputs[0].finished()
                 if finished:
                     prompt_tokens = len(output.prompt_token_ids or [])
                     completion_tokens = len(output.outputs[0].token_ids or [])
+                    finish_reason_raw = getattr(
+                        output.outputs[0], "finish_reason", None
+                    )
+                    if finish_reason_raw is not None:
+                        finish_reason = getattr(
+                            finish_reason_raw, "value", None
+                        ) or str(finish_reason_raw)
                     usage = UsageReport(
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
@@ -202,6 +224,9 @@ class LocalVLLMEngine:
                     text=clean_text,
                     finished=finished,
                     usage=usage,
+                    think_text=think_text if think_active and think_text else None,
+                    thinking=think_active,
+                    finish_reason=finish_reason,
                 )
 
     async def generate(self, history, user_message):
@@ -360,12 +385,14 @@ class LocalHFEngine:
         full_text = ""
         for new_text in streamer:
             full_text += new_text
-            clean_text = _strip_think_tag(full_text)
+            think_text, clean_text, think_active = _split_think_and_answer(full_text)
             yield StreamChunk(
                 delta=new_text,
                 text=clean_text,
                 finished=False,
                 usage=None,
+                think_text=think_text if think_active and think_text else None,
+                thinking=think_active,
             )
         
         thread.join()
@@ -379,11 +406,14 @@ class LocalHFEngine:
             total_tokens=prompt_tokens + completion_tokens,
         )
 
+        final_think, final_clean, _ = _split_think_and_answer(full_text)
         yield StreamChunk(
             delta="",
-            text=_strip_think_tag(full_text),
+            text=final_clean,
             finished=True,
             usage=usage,
+            think_text=None,
+            thinking=False,
         )
     
     async def generate(self, history, user_message):
@@ -478,13 +508,15 @@ class LocalMLXEngine:
                     delta = str(response) # Fallback
                 
                 full_text += delta
-                clean_text = _strip_think_tag(full_text)
+                think_text, clean_text, think_active = _split_think_and_answer(full_text)
                 
                 yield StreamChunk(
                     delta=delta,
                     text=clean_text,
                     finished=False,
                     usage=None,
+                    think_text=think_text if think_active and think_text else None,
+                    thinking=think_active,
                 )
 
         completion_tokens = self._count_tokens(full_text)
@@ -494,11 +526,14 @@ class LocalMLXEngine:
             total_tokens=prompt_tokens + completion_tokens,
         )
         
+        final_think, final_clean, _ = _split_think_and_answer(full_text)
         yield StreamChunk(
             delta="",
-            text=_strip_think_tag(full_text),
+            text=final_clean,
             finished=True,
             usage=usage,
+            think_text=None,
+            thinking=False,
         )
 
     async def generate(self, history, user_message):
@@ -555,13 +590,15 @@ class LocalOllamaEngine:
         for chunk in stream:
             delta = chunk.get("message", {}).get("content", "")
             full_text += delta
-            clean_text = _strip_think_tag(full_text)
+            think_text, clean_text, think_active = _split_think_and_answer(full_text)
             
             yield StreamChunk(
                 delta=delta,
                 text=clean_text,
                 finished=False,
                 usage=None,
+                think_text=think_text if think_active and think_text else None,
+                thinking=think_active,
             )
             
             if chunk.get("done", False):
@@ -574,11 +611,14 @@ class LocalOllamaEngine:
             total_tokens=final_prompt_tokens + final_eval_tokens,
         )
         
+        final_think, final_clean, _ = _split_think_and_answer(full_text)
         yield StreamChunk(
             delta="",
-            text=_strip_think_tag(full_text),
+            text=final_clean,
             finished=True,
             usage=usage,
+            think_text=None,
+            thinking=False,
         )
 
     async def generate(self, history, user_message):
