@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, constr, field_validator
+
+from . import config
 
 
 class ChatMessage(BaseModel):
@@ -24,6 +28,9 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = Field(
         default_factory=list,
         description="Chronological chat history excluding the new user message.",
+    )
+    model_variant: Literal["baseline", "finetuned", "compare"] = Field(
+        default=config.DEFAULT_MODEL_VARIANT
     )
 
 

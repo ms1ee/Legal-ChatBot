@@ -44,17 +44,27 @@ def load_conversation(conversation_id):
         return json.load(f)
 
 
-def _default_title(message):
-    if not message:
-        return "New chat"
-    snippet = message.strip().splitlines()[0][:40]
-    return snippet or "New chat"
+def _first_word(text):
+    if not text:
+        return ""
+    snippet = text.strip().split()[0]
+    return snippet[:40]
+
+
+def _conversation_title(assistant_message, user_message=None):
+    for source in (assistant_message, user_message):
+        if not source:
+            continue
+        snippet = _first_word(source)
+        if snippet:
+            return snippet
+    return "New chat"
 
 
 def save_conversation(conversation_id, user_message, assistant_message, history):
     if conversation_id is None:
         conversation_id = uuid.uuid4().hex
-        title = _default_title(user_message)
+        title = _conversation_title(assistant_message, user_message)
         record = {
             "id": conversation_id,
             "title": title,
@@ -68,12 +78,12 @@ def save_conversation(conversation_id, user_message, assistant_message, history)
     else:
         record = load_conversation(conversation_id) or {
             "id": conversation_id,
-            "title": _default_title(user_message),
+            "title": _conversation_title(assistant_message, user_message),
             "created_at": _now_iso(),
             "messages": history,
         }
         if not record.get("title"):
-            record["title"] = _default_title(user_message)
+            record["title"] = _conversation_title(assistant_message, user_message)
         record.setdefault("messages", history)
         record["messages"] = history + [
             {"role": "user", "content": user_message},
