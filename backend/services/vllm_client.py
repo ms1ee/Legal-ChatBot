@@ -29,37 +29,25 @@ class StreamChunk:
     text: str
     finished: bool
     usage: UsageReport | None = None
-    think_text: str | None = None
-    thinking: bool = False
-    finish_reason: str | None = None
-
-
-def _split_think_and_answer(text: str) -> tuple[str, str, bool]:
-    """Return (think_text, answer_text, thinking_active)."""
-
-    lowered = text.lower()
-    start = lowered.find(THINK_OPEN)
-    if start == -1:
-        return "", text.strip(), False
-
-    start_idx = start + len(THINK_OPEN)
-    end = lowered.find(THINK_CLOSE, start_idx)
-
-    prefixed = text[:start]
-    if end == -1:
-        think_section = text[start_idx:]
-        answer_text = prefixed.strip()
-        return think_section.strip(), answer_text, True
-
-    think_section = text[start_idx:end]
-    suffix = text[end + len(THINK_CLOSE) :]
-    answer_text = (prefixed + suffix).strip()
-    return think_section.strip(), answer_text, False
 
 
 def _strip_think_tag(text):
-    _, answer_text, _ = _split_think_and_answer(text)
-    return answer_text
+    lowered = text.lower()
+    result = []
+    idx = 0
+    while idx < len(text):
+        start = lowered.find(THINK_OPEN, idx)
+        if start == -1:
+            result.append(text[idx:])
+            break
+        result.append(text[idx:start])
+        end = lowered.find(THINK_CLOSE, start)
+        if end == -1:
+            # Drop everything after an opening tag with no closing tag yet.
+            break
+        idx = end + len(THINK_CLOSE)
+    cleaned = "".join(result)
+    return cleaned.strip()
 
 
 def _maybe_resolve_local_path(path_like):
@@ -123,7 +111,6 @@ class LocalVLLMEngine:
             temperature=config.TEMPERATURE,
             top_p=config.TOP_P,
             max_tokens=config.MAX_NEW_TOKENS,
-            seed=config.SEED
         )
 
     def _prepare_prompt(self, history, user_message):
@@ -190,9 +177,7 @@ class LocalVLLMEngine:
                     continue
 
                 raw_text = output.outputs[0].text or ""
-                think_text, clean_text, think_active = _split_think_and_answer(
-                    raw_text
-                )
+                clean_text = _strip_think_tag(raw_text)
                 if clean_text.startswith(last_clean_text):
                     delta = clean_text[len(last_clean_text) :]
                 else:
@@ -200,34 +185,21 @@ class LocalVLLMEngine:
                 last_clean_text = clean_text
 
                 usage = None
-                finish_reason = None
                 finished = output.finished and output.outputs[0].finished()
                 if finished:
                     prompt_tokens = len(output.prompt_token_ids or [])
                     completion_tokens = len(output.outputs[0].token_ids or [])
-                    finish_reason_raw = getattr(
-                        output.outputs[0], "finish_reason", None
-                    )
-                    if finish_reason_raw is not None:
-                        finish_reason = getattr(
-                            finish_reason_raw, "value", None
-                        ) or str(finish_reason_raw)
                     usage = UsageReport(
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=prompt_tokens + completion_tokens,
                     )
 
-                think_payload = think_text if think_text else None
-
                 yield StreamChunk(
                     delta=delta,
                     text=clean_text,
                     finished=finished,
                     usage=usage,
-                    think_text=think_payload,
-                    thinking=think_active,
-                    finish_reason=finish_reason,
                 )
 
     async def generate(self, history, user_message):

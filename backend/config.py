@@ -3,9 +3,7 @@ from pathlib import Path
 MODEL_DISPLAY_NAME = "LexAI-Qwen3 1.7B"
 MAX_NEW_TOKENS = 8192
 TEMPERATURE = 0
-TOP_P = 0.4
-SEED = 42
-
+TOP_P = 0.1
 
 BASELINE_MODEL = "Qwen/Qwen3-1.7B"
 FINETUNED_MODEL = "Qwen/Qwen3-1.7B"
